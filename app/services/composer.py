@@ -1,4 +1,8 @@
-"""自动混剪合成：按时间线裁剪片段 -> 统一规格 -> 拼接 -> 字幕 -> 成片。"""
+"""自动混剪合成：按时间线裁剪片段 -> 统一规格 -> 转场拼接 -> 字幕 -> 成片。
+
+转场实现：全部硬切时走 concat demuxer 快路径；含转场时构建
+xfade（视频）+ acrossfade/concat（音频）滤镜链，画面与音频同步过渡。
+"""
 import logging
 import shutil
 import subprocess
@@ -9,9 +13,17 @@ from pathlib import Path
 from app.config import get_settings
 from app.services.matcher import TimelineClip
 from app.services.media import MediaError, missing_binary_msg
-from app.services.subtitles import write_srt
+from app.services.subtitles import allocate_cues, write_srt
 
 logger = logging.getLogger(__name__)
+
+# ShotSpec.transition -> ffmpeg xfade transition 名称
+_XFADE_MAP = {
+    "dissolve": "fade",       # 经典叠化，切换最柔和
+    "fade": "fadeblack",      # 经黑场过渡
+    "slide": "slideleft",
+    "wipe": "wipeleft",
+}
 
 
 def _run(cmd: list[str], timeout: int = 3600) -> None:
@@ -50,8 +62,7 @@ def compose(
     try:
         # 1. 逐片段裁剪并统一规格
         clip_files: list[Path] = []
-        srt_entries: list[tuple[float, float, str]] = []
-        cursor = 0.0
+        clip_durs: list[float] = []
         for i, clip in enumerate(timeline):
             src = material_paths.get(clip.material_id)
             if not src or not Path(src).exists():
@@ -62,26 +73,23 @@ def compose(
                 src, dst, clip.start, clip_dur,
                 width=width, height=height, fps=fps,
                 keep_audio=keep_source_audio,
-                fade=(clip.transition == "fade"),
+                # 首镜头 fade = 从黑场淡入；后续镜头的转场在拼接阶段处理
+                fade_in=(i == 0 and clip.transition == "fade"),
             )
             clip_files.append(dst)
-            if clip.narration:
-                srt_entries.append((cursor, cursor + clip_dur, clip.narration))
-            cursor += clip_dur
-            report(0.1 + 0.6 * (i + 1) / len(timeline), f"已合成片段 {i + 1}/{len(timeline)}")
+            clip_durs.append(clip_dur)
+            report(0.1 + 0.55 * (i + 1) / len(timeline), f"已合成片段 {i + 1}/{len(timeline)}")
 
-        # 2. 拼接
-        concat_list = work_dir / "concat.txt"
-        # concat demuxer 会把相对路径解析为「相对列表文件所在目录」，必须写绝对路径
-        concat_list.write_text(
-            "\n".join(f"file '{p.resolve().as_posix()}'" for p in clip_files), encoding="utf-8"
-        )
+        # 2. 拼接（计算每个镜头在成片时间轴上的起点，供字幕精确对齐）
         merged = work_dir / "merged.mp4"
-        _run([
-            settings.ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
-            "-i", str(concat_list), "-c", "copy", str(merged),
-        ])
+        starts = _assemble(clip_files, clip_durs, timeline, merged, work_dir)
         report(0.75, "片段拼接完成")
+
+        # 字幕：按镜头实际起点对齐，长文案拆分为多条与画面同步
+        srt_entries: list[tuple[float, float, str]] = []
+        for i, clip in enumerate(timeline):
+            if clip.narration:
+                srt_entries.extend(allocate_cues(clip.narration, starts[i], clip_durs[i]))
 
         # 3. BGM 混音（可选）
         if bgm_path and Path(bgm_path).exists():
@@ -129,9 +137,84 @@ def compose(
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def _assemble(
+    clip_files: list[Path],
+    clip_durs: list[float],
+    timeline: list[TimelineClip],
+    merged: Path,
+    work_dir: Path,
+) -> list[float]:
+    """拼接所有片段，返回每个镜头在成片时间轴上的起点。
+
+    全为硬切时走 concat demuxer（流复制，零损耗）；
+    含转场时构建 xfade + acrossfade 滤镜链（重叠过渡，总时长缩短转场时间之和）。
+    """
+    settings = get_settings()
+    n = len(clip_files)
+    has_transition = any(c.transition in _XFADE_MAP for c in timeline[1:])
+
+    if n == 1 or not has_transition:
+        starts = [0.0]
+        for d in clip_durs[:-1]:
+            starts.append(starts[-1] + d)
+        concat_list = work_dir / "concat.txt"
+        # concat demuxer 会把相对路径解析为「相对列表文件所在目录」，必须写绝对路径
+        concat_list.write_text(
+            "\n".join(f"file '{p.resolve().as_posix()}'" for p in clip_files), encoding="utf-8"
+        )
+        _run([
+            settings.ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+            "-i", str(concat_list), "-c", "copy", str(merged),
+        ])
+        return starts
+
+    # ---- xfade 滤镜链 ----
+    lines: list[str] = []
+    for i in range(n):
+        lines.append(f"[{i}:v]format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[v{i}]")
+        lines.append(f"[{i}:a]asetpts=PTS-STARTPTS[a{i}]")
+
+    vacc, aacc = "v0", "a0"
+    total = clip_durs[0]
+    starts = [0.0]
+    for k in range(1, n):
+        clip = timeline[k]
+        xf = _XFADE_MAP.get(clip.transition)
+        if xf is None:  # 硬切
+            lines.append(f"[{vacc}][v{k}]concat=n=2:v=1:a=0[vc{k}]")
+            lines.append(f"[{aacc}][a{k}]concat=n=2:v=0:a=1[ac{k}]")
+            starts.append(total)
+            total += clip_durs[k]
+        else:
+            # 转场时长不能超过相邻两个片段各自的一半，否则 xfade/acrossfade 会出错
+            d = max(0.1, min(clip.transition_duration, clip_durs[k - 1] / 2, clip_durs[k] / 2))
+            offset = max(0.0, total - d)
+            lines.append(
+                f"[{vacc}][v{k}]xfade=transition={xf}:duration={d:.3f}:offset={offset:.3f}[vc{k}]"
+            )
+            lines.append(f"[{aacc}][a{k}]acrossfade=d={d:.3f}[ac{k}]")
+            starts.append(offset)
+            total = offset + clip_durs[k]
+        vacc, aacc = f"vc{k}", f"ac{k}"
+
+    cmd = [settings.ffmpeg_bin, "-y"]
+    for p in clip_files:
+        cmd += ["-i", str(p)]
+    cmd += [
+        "-filter_complex", ";".join(lines),
+        "-map", f"[{vacc}]", "-map", f"[{aacc}]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "21",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(merged),
+    ]
+    _run(cmd)
+    return starts
+
+
 def _cut_and_normalize(
     src: str | Path, dst: Path, start: float, duration: float,
-    *, width: int, height: int, fps: int, keep_audio: bool, fade: bool,
+    *, width: int, height: int, fps: int, keep_audio: bool, fade_in: bool,
 ) -> None:
     """裁剪片段并统一为目标分辨率/帧率；无声或静音时补无声轨，保证拼接一致。"""
     vf_parts = [
@@ -140,7 +223,7 @@ def _cut_and_normalize(
         f"fps={fps}",
         "setsar=1",
     ]
-    if fade:
+    if fade_in:
         fade_d = min(0.3, duration / 4)
         vf_parts.append(f"fade=t=in:st=0:d={fade_d}")
 

@@ -13,9 +13,9 @@
 | 素材分析 | 统一转码（H.264/AAC）、封面提取、场景切分（ffmpeg scene score）、抽帧、ASR 转写、OCR 画面文字 |
 | AI 内容脚本 | LLM 根据主题/风格/时长生成口播脚本，可人工编辑 |
 | 结构化执行脚本 | LLM 将内容脚本转为 JSON（镜头 / 文案 / 关键词 / 时长），Pydantic 严格校验 + 自动修复 |
-| 素材自动匹配 | 分词关键词检索（ASR + OCR + 标题/标签）+ 时长契合度 + 多样性惩罚 |
-| 自动混剪 | 按时间线裁剪 → 统一分辨率/帧率 → 拼接 → BGM 混音（可选） |
-| 字幕 | 自动生成 SRT，支持烧录（burn）/ 软字幕（soft）/ 无（none），SRT 随成片保留 |
+| 素材自动匹配 | 分词关键词检索（ASR + OCR + 标题/标签）+ 时长契合度 + 多素材交叉混剪（相邻镜头优先不同素材、同片段分窗口复用不重复画面） |
+| 自动混剪 | 按时间线裁剪 → 统一分辨率/帧率 → 转场拼接（xfade 叠化/黑场/滑动/划像 + 音频交叉淡化）→ BGM 混音（可选） |
+| 字幕 | 镜头时长按文案字数校准语速，长文案自动拆条与画面对齐；支持烧录（burn）/ 软字幕（soft）/ 无（none），SRT 随成片保留 |
 | 异步任务 | 渲染与分析全异步，状态/进度落库，支持失败重试 |
 | 成片输出 | 在线预览、下载成片与 SRT 字幕 |
 
@@ -81,10 +81,11 @@ TASK_BACKEND=celery docker compose --profile saas up
     {
       "index": 1,
       "narration": "该镜头的字幕/口播文案",
-      "keywords": ["连衣裙", "试穿"],
+      "keywords": ["纸巾", "抽纸特写"],
       "duration": 3.5,
       "material_id": null,
-      "transition": "cut"
+      "transition": "dissolve",
+      "transition_duration": 0.4
     }
   ]
 }
@@ -92,7 +93,9 @@ TASK_BACKEND=celery docker compose --profile saas up
 
 - `keywords`：用于匹配素材画面，描述需要的物体/动作/场景
 - `material_id`：可强制指定素材，留空则自动匹配
-- `subtitle.mode`：`burn` 烧录 / `soft` 软字幕 / `none` 不加
+- `duration`：系统会按文案字数自动校准（中文语速约 4 字/秒），保证字幕节奏与画面统一
+- `transition`：进入该镜头的转场，`cut` 硬切 / `dissolve` 叠化 / `fade` 黑场 / `slide` 滑动 / `wipe` 划像；含转场时使用 xfade + 音频交叉淡化合成，切换平滑
+- `subtitle.mode`：`burn` 烧录 / `soft` 软字幕 / `none` 不加；长文案自动拆分为多条短字幕并按比例对齐画面
 
 ## 配置说明（节选，完整见 `.env.example`）
 

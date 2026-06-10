@@ -15,14 +15,20 @@ class SubtitleSpec(BaseModel):
 
 
 class ShotSpec(BaseModel):
-    """单个镜头：narration 作为字幕文案，keywords 用于素材匹配。"""
+    """单个镜头：narration 作为字幕文案，keywords 用于素材匹配。
+
+    transition 表示「进入该镜头」的转场方式（首镜头 fade=从黑场淡入）：
+    - cut: 硬切          - dissolve: 叠化（最常用，切换最柔和）
+    - fade: 经黑场过渡   - slide: 滑动        - wipe: 划像
+    """
 
     index: int
     narration: str = ""
     keywords: list[str] = Field(default_factory=list)
     duration: float = Field(gt=0, le=60, default=3.0)
     material_id: str | None = None  # 指定素材（可选），否则自动匹配
-    transition: Literal["cut", "fade"] = "cut"
+    transition: Literal["cut", "fade", "dissolve", "slide", "wipe"] = "cut"
+    transition_duration: float = Field(default=0.4, ge=0.1, le=1.5)
 
 
 class ExecutionScript(BaseModel):

@@ -30,6 +30,7 @@ class TimelineClip:
     end: float
     narration: str
     transition: str
+    transition_duration: float = 0.4
 
     def to_dict(self) -> dict:
         return {
@@ -40,6 +41,7 @@ class TimelineClip:
             "end": round(self.end, 3),
             "narration": self.narration,
             "transition": self.transition,
+            "transition_duration": self.transition_duration,
         }
 
 
@@ -106,14 +108,19 @@ def match_script(
             "tokens": _tokenize(text),
         })
 
-    used_segments: dict[str, int] = {}
+    used_segments: dict[str, int] = {}        # 片段 -> 已使用次数
+    consumed: dict[str, float] = {}           # 片段 -> 已消费到的时间点（分窗口复用，避免画面重复）
     used_materials: dict[str, int] = {}
     timeline: list[TimelineClip] = []
+    prev_material: str | None = None
 
     for shot in script.shots:
-        clip = _match_shot(shot, pool, used_segments, used_materials)
-        used_segments[clip.segment_id or ""] = used_segments.get(clip.segment_id or "", 0) + 1
+        clip = _match_shot(shot, pool, used_segments, consumed, used_materials, prev_material)
+        if clip.segment_id:
+            used_segments[clip.segment_id] = used_segments.get(clip.segment_id, 0) + 1
+            consumed[clip.segment_id] = clip.end
         used_materials[clip.material_id] = used_materials.get(clip.material_id, 0) + 1
+        prev_material = clip.material_id
         timeline.append(clip)
     return timeline
 
@@ -122,7 +129,9 @@ def _match_shot(
     shot: ShotSpec,
     pool: list[dict],
     used_segments: dict[str, int],
+    consumed: dict[str, float],
     used_materials: dict[str, int],
+    prev_material: str | None,
 ) -> TimelineClip:
     candidates = pool
     if shot.material_id:  # 用户在执行脚本中指定了素材
@@ -130,30 +139,46 @@ def _match_shot(
         if forced:
             candidates = forced
 
-    best, best_score = None, float("-inf")
+    best, best_score, best_window = None, float("-inf"), (0.0, 0.0)
     for p in candidates:
         seg: Segment = p["seg"]
+        # 优先取片段中尚未使用的时间窗口（同片段复用时不重复画面）
+        avail_start = max(seg.start, consumed.get(seg.id, seg.start))
+        remaining = seg.end - avail_start
+        if remaining >= max(1.0, 0.6 * shot.duration):
+            window_start = avail_start
+            window_len = remaining
+            reuse_penalty = 0.2 * used_segments.get(seg.id, 0)  # 不重叠复用，轻罚
+        else:
+            window_start = seg.start
+            window_len = seg.duration
+            reuse_penalty = 1.5 * used_segments.get(seg.id, 0)  # 画面重复，重罚
+
         score = (
             2.0 * _keyword_score(shot.keywords, p["tokens"], p["text"])
-            + 1.0 * _duration_score(seg.duration, shot.duration)
-            - 1.5 * used_segments.get(seg.id, 0)       # 重复用同一片段重罚
-            - 0.3 * used_materials.get(seg.material_id, 0)  # 同素材轻罚，鼓励多样性
+            + 1.0 * _duration_score(window_len, shot.duration)
+            - reuse_penalty
+            - 0.3 * used_materials.get(seg.material_id, 0)  # 总量均衡，鼓励多素材混剪
         )
+        # 相邻镜头来自不同素材：交叉混剪的关键（单素材时所有候选同罚，不影响结果）
+        if prev_material and seg.material_id == prev_material:
+            score -= 0.8
         if score > best_score:
-            best, best_score = p, score
+            best, best_score, best_window = p, score, (window_start, window_len)
 
     assert best is not None
     seg = best["seg"]
-    # 在片段内取需求时长；不够长就用整段（合成时会自动适配）
-    end = min(seg.end, seg.start + shot.duration)
-    if end - seg.start < 0.5:
-        end = seg.end
+    start = best_window[0]
+    end = min(seg.end, start + shot.duration)
+    if end - start < 0.5:  # 窗口过短则退回整段
+        start, end = seg.start, seg.end
     return TimelineClip(
         shot_index=shot.index,
         material_id=seg.material_id,
         segment_id=seg.id,
-        start=seg.start,
+        start=start,
         end=end,
         narration=shot.narration,
         transition=shot.transition,
+        transition_duration=shot.transition_duration,
     )

@@ -97,29 +97,26 @@ def _mock_execution_json(user: str) -> str:
         if line.startswith("内容脚本"):
             capture = True
             continue
-        if capture and line:
-            lines.append(line.lstrip("【").replace("】", " "))
+        if capture:
+            if line.startswith("请输出"):  # 指令行，不是文案
+                break
+            if line:
+                lines.append(line.lstrip("【").replace("】", " "))
     if not lines:
         lines = ["开场 引入主题", "展示 核心亮点", "细节 重点说明", "结尾 引导关注"]
-
-    target = 30.0
-    field = _extract_field(user, "目标时长")
-    if field:
-        try:
-            target = float(field.replace("秒", "").strip())
-        except ValueError:
-            pass
-    per = round(max(2.0, min(8.0, target / max(1, len(lines)))), 1)
 
     shots = []
     for i, line in enumerate(lines):
         words = [w for w in line.replace("，", " ").replace("。", " ").split() if len(w) >= 2][:4]
+        chars = len(line.replace(" ", ""))
         shots.append({
             "index": i + 1,
             "narration": line,
             "keywords": words or [line[:4]],
-            "duration": per,
-            "transition": "cut",
+            "duration": round(max(2.0, min(10.0, chars / 4.0 + 0.5)), 1),
+            # 开场淡入，之后以叠化为主保证切换流畅
+            "transition": "fade" if i == 0 else "dissolve",
+            "transition_duration": 0.4,
         })
     return json.dumps({
         "version": 1,
