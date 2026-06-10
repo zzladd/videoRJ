@@ -69,8 +69,9 @@ def compose(
 
         # 2. 拼接
         concat_list = work_dir / "concat.txt"
+        # concat demuxer 会把相对路径解析为「相对列表文件所在目录」，必须写绝对路径
         concat_list.write_text(
-            "\n".join(f"file '{p.as_posix()}'" for p in clip_files), encoding="utf-8"
+            "\n".join(f"file '{p.resolve().as_posix()}'" for p in clip_files), encoding="utf-8"
         )
         merged = work_dir / "merged.mp4"
         _run([
