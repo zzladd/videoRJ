@@ -75,9 +75,9 @@ def create_from_url(
     tenant: str = Depends(get_tenant),
     db: Session = Depends(get_db),
 ):
-    """通过链接下载素材（抖音等）。仅限已获得合法授权的内容，建议填写 license_note 留痕。"""
-    if not body.url.startswith(("http://", "https://")):
-        raise HTTPException(400, "无效的链接")
+    """通过链接下载素材（抖音等），支持直接粘贴 App 分享文本。仅限已获得合法授权的内容，建议填写 license_note 留痕。"""
+    if "http://" not in body.url and "https://" not in body.url:
+        raise HTTPException(400, "无效的链接：未找到 http(s) 地址")
     mat = Material(
         tenant_id=tenant,
         title=body.title,

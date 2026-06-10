@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # OCR
     ocr_provider: str = "none"  # none | rapidocr
 
+    # 链接下载：Netscape 格式 cookies.txt 路径（抖音部分内容需登录 Cookie）
+    ytdlp_cookies_file: str = ""
+
     # 视频处理
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
