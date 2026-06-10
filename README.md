@@ -42,9 +42,14 @@ pip install -r requirements.txt
 # 2. 配置（可选，默认即可跑通；LLM 默认 mock 无需 Key）
 cp .env.example .env
 
-# 3. 启动
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# 3. 启动（推荐方式，Windows 兼容性最好，Ctrl+C 可正常退出）
+python run.py
+# 或: uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+> Windows 提示：请用 `python run.py` 启动。它会切换到 Selector 事件循环，
+> 避免浏览器拖动/关闭视频预览时刷 `ConnectionResetError (WinError 10054)` 日志；
+> 后台任务使用守护线程，Ctrl+C 可立即退出，重启后中断的任务会自动标记为失败、可一键重试。
 
 打开 http://localhost:8000 即可使用 Web 界面；API 文档见 http://localhost:8000/docs 。
 
