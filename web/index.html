@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 视频混剪系统</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🎬 AI 视频混剪系统</div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="materials">素材库</button>
+      <button class="tab" data-tab="scripts">AI 脚本</button>
+      <button class="tab" data-tab="jobs">渲染任务</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ====== 素材库 ====== -->
+    <section id="tab-materials" class="panel active">
+      <div class="card">
+        <h2>添加素材</h2>
+        <div class="grid-2">
+          <form id="upload-form" class="sub-card">
+            <h3>本地上传</h3>
+            <input type="file" name="file" accept="video/*" required>
+            <input type="text" name="title" placeholder="标题（可选）">
+            <input type="text" name="license_note" placeholder="授权说明，如：自拍素材 / XX 授权">
+            <input type="text" name="tags" placeholder="标签，逗号分隔（可选）">
+            <button type="submit" class="btn primary">上传并分析</button>
+          </form>
+          <form id="url-form" class="sub-card">
+            <h3>链接下载（抖音等）</h3>
+            <input type="url" name="url" placeholder="视频链接（仅限已获授权内容）" required>
+            <input type="text" name="title" placeholder="标题（可选）">
+            <input type="text" name="license_note" placeholder="授权说明（建议填写授权方）">
+            <input type="text" name="tags" placeholder="标签，逗号分隔（可选）">
+            <button type="submit" class="btn primary">下载并分析</button>
+            <p class="hint">⚠️ 请确保素材已获得合法授权，授权信息将留痕存档。</p>
+          </form>
+        </div>
+      </div>
+      <div class="card">
+        <h2>素材列表 <button id="refresh-materials" class="btn small">刷新</button></h2>
+        <div id="material-list" class="material-grid"></div>
+      </div>
+    </section>
+
+    <!-- ====== AI 脚本 ====== -->
+    <section id="tab-scripts" class="panel">
+      <div class="card">
+        <h2>AI 生成脚本</h2>
+        <form id="script-form" class="form-row">
+          <input type="text" name="topic" placeholder="视频主题，如：夏季新款连衣裙种草" required style="flex:2">
+          <input type="text" name="style" placeholder="风格" value="口播带货" style="flex:1">
+          <input type="number" name="target_duration" placeholder="目标时长(秒)" value="30" min="6" max="300" style="width:130px">
+          <button type="submit" class="btn primary">生成脚本</button>
+        </form>
+        <p class="hint">AI 会先生成内容脚本（口播文案），再自动转换为结构化执行脚本 JSON，均可手动编辑。</p>
+      </div>
+      <div class="card">
+        <h2>脚本列表 <button id="refresh-scripts" class="btn small">刷新</button></h2>
+        <div id="script-list"></div>
+      </div>
+    </section>
+
+    <!-- ====== 渲染任务 ====== -->
+    <section id="tab-jobs" class="panel">
+      <div class="card">
+        <h2>渲染任务 <button id="refresh-jobs" class="btn small">刷新</button></h2>
+        <div id="job-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 脚本编辑弹窗 -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3 id="modal-title">编辑脚本</h3>
+        <button class="btn small" onclick="closeModal()">✕</button>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

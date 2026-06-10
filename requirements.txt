@@ -1,0 +1,28 @@
+# Web 框架
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+
+# 数据层
+sqlalchemy>=2.0
+
+# 配置
+pydantic>=2.7
+pydantic-settings>=2.3
+
+# HTTP 客户端（LLM / 远程 ASR 等）
+httpx>=0.27
+
+# 视频链接下载（抖音等，需自行确保已获授权）
+yt-dlp>=2024.8.6
+
+# 中文分词（素材匹配）
+jieba>=0.42.1
+
+# 可选：分布式任务队列（SaaS 化时启用）
+celery>=5.4
+redis>=5.0
+
+# 可选依赖（按需安装）：
+#   本地 ASR:  pip install faster-whisper
+#   本地 OCR:  pip install rapidocr-onnxruntime

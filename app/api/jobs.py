@@ -1,0 +1,118 @@
+"""渲染任务 API：提交渲染、查询进度、成片预览与下载。"""
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
+
+from app.auth import get_tenant
+from app.database import get_db
+from app.models import RenderJob, Script
+from app.schemas import RenderJobOut, RenderOptionsIn
+from app.tasks.runner import dispatch
+
+router = APIRouter(prefix="/api", tags=["渲染任务"])
+
+
+def _to_out(job: RenderJob) -> RenderJobOut:
+    out = RenderJobOut.model_validate(job)
+    if job.status == "success" and job.output_path:
+        out.output_url = f"/api/jobs/{job.id}/output"
+    return out
+
+
+@router.post("/scripts/{script_id}/render", response_model=RenderJobOut)
+def submit_render(
+    script_id: str,
+    body: RenderOptionsIn | None = None,
+    tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    """提交渲染任务（异步执行，轮询 /api/jobs/{id} 获取进度）。"""
+    script = db.get(Script, script_id)
+    if script is None or script.tenant_id != tenant:
+        raise HTTPException(404, "脚本不存在")
+    if not script.execution:
+        raise HTTPException(400, "脚本尚未生成执行脚本 JSON")
+
+    options = body.model_dump(exclude_none=True) if body else {}
+    job = RenderJob(tenant_id=tenant, script_id=script_id, options=options)
+    db.add(job)
+    db.commit()
+    dispatch("render_job", job.id)
+    return _to_out(job)
+
+
+@router.get("/jobs", response_model=list[RenderJobOut])
+def list_jobs(
+    status: str | None = None,
+    tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    q = db.query(RenderJob).filter_by(tenant_id=tenant)
+    if status:
+        q = q.filter_by(status=status)
+    return [_to_out(j) for j in q.order_by(RenderJob.created_at.desc()).all()]
+
+
+def _get_job(job_id: str, tenant: str, db: Session) -> RenderJob:
+    job = db.get(RenderJob, job_id)
+    if job is None or job.tenant_id != tenant:
+        raise HTTPException(404, "任务不存在")
+    return job
+
+
+@router.get("/jobs/{job_id}", response_model=RenderJobOut)
+def get_job(job_id: str, tenant: str = Depends(get_tenant), db: Session = Depends(get_db)):
+    return _to_out(_get_job(job_id, tenant, db))
+
+
+@router.post("/jobs/{job_id}/retry", response_model=RenderJobOut)
+def retry_job(job_id: str, tenant: str = Depends(get_tenant), db: Session = Depends(get_db)):
+    job = _get_job(job_id, tenant, db)
+    if job.status not in ("failed", "canceled"):
+        raise HTTPException(400, f"当前状态不可重试: {job.status}")
+    job.status = "queued"
+    job.progress = 0.0
+    job.message = ""
+    db.commit()
+    dispatch("render_job", job.id)
+    return _to_out(job)
+
+
+@router.get("/jobs/{job_id}/output")
+def download_output(
+    job_id: str,
+    download: bool = False,
+    tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    """成片预览（默认内联播放）或下载（?download=true）。"""
+    job = _get_job(job_id, tenant, db)
+    if job.status != "success" or not job.output_path or not Path(job.output_path).exists():
+        raise HTTPException(404, "成片不存在或尚未渲染完成")
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{job.id}.mp4"'
+    return FileResponse(job.output_path, media_type="video/mp4", headers=headers)
+
+
+@router.get("/jobs/{job_id}/subtitles")
+def download_subtitles(job_id: str, tenant: str = Depends(get_tenant), db: Session = Depends(get_db)):
+    """下载成片对应的 SRT 字幕文件。"""
+    job = _get_job(job_id, tenant, db)
+    srt = Path(job.output_path).with_suffix(".srt") if job.output_path else None
+    if not srt or not srt.exists():
+        raise HTTPException(404, "字幕文件不存在")
+    return FileResponse(srt, media_type="text/plain", filename=f"{job.id}.srt")
+
+
+@router.delete("/jobs/{job_id}")
+def delete_job(job_id: str, tenant: str = Depends(get_tenant), db: Session = Depends(get_db)):
+    job = _get_job(job_id, tenant, db)
+    if job.output_path:
+        Path(job.output_path).unlink(missing_ok=True)
+        Path(job.output_path).with_suffix(".srt").unlink(missing_ok=True)
+    db.delete(job)
+    db.commit()
+    return {"ok": True}
