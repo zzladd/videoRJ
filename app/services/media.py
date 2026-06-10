@@ -15,9 +15,33 @@ class MediaError(RuntimeError):
     pass
 
 
+def missing_binary_msg(bin_name: str) -> str:
+    return (
+        f"未找到可执行文件「{bin_name}」。请先安装 ffmpeg 并加入系统 PATH，"
+        "或在 .env 中将 FFMPEG_BIN / FFPROBE_BIN 配置为完整路径。"
+        "Windows 安装方式：winget install Gyan.FFmpeg（装完重开终端），"
+        "或从 https://www.gyan.dev/ffmpeg/builds/ 下载解压后配置路径，"
+        "例如 FFMPEG_BIN=D:\\ffmpeg\\bin\\ffmpeg.exe"
+    )
+
+
+def check_tools() -> dict[str, bool]:
+    """检测 ffmpeg / ffprobe 是否可用（供启动检查与健康检查使用）。"""
+    import shutil
+
+    s = get_settings()
+    return {
+        "ffmpeg": shutil.which(s.ffmpeg_bin) is not None,
+        "ffprobe": shutil.which(s.ffprobe_bin) is not None,
+    }
+
+
 def _run(cmd: list[str], timeout: int = 3600) -> subprocess.CompletedProcess:
     logger.debug("exec: %s", " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as e:
+        raise MediaError(missing_binary_msg(cmd[0])) from e
     if proc.returncode != 0:
         raise MediaError(f"命令失败: {' '.join(cmd[:6])}...\n{proc.stderr[-2000:]}")
     return proc
@@ -109,14 +133,17 @@ _SCENE_PTS_RE = re.compile(r"pts_time:(\d+(?:\.\d+)?)")
 def detect_scenes(src: str | Path, duration: float, min_len: float = 1.0) -> list[tuple[float, float]]:
     """基于 ffmpeg scene score 的场景切分，返回 [(start, end)]；过短的场景会向后合并。"""
     s = get_settings()
-    proc = subprocess.run(
-        [
-            s.ffmpeg_bin, "-i", str(src),
-            "-vf", f"select='gt(scene,{s.scene_threshold})',showinfo",
-            "-f", "null", "-",
-        ],
-        capture_output=True, text=True, timeout=3600,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                s.ffmpeg_bin, "-i", str(src),
+                "-vf", f"select='gt(scene,{s.scene_threshold})',showinfo",
+                "-f", "null", "-",
+            ],
+            capture_output=True, text=True, timeout=3600,
+        )
+    except FileNotFoundError as e:
+        raise MediaError(missing_binary_msg(s.ffmpeg_bin)) from e
     cuts = [float(m.group(1)) for m in _SCENE_PTS_RE.finditer(proc.stderr)]
     cuts = sorted(t for t in set(cuts) if 0 < t < duration)
 

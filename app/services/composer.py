@@ -8,14 +8,17 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.services.matcher import TimelineClip
-from app.services.media import MediaError
+from app.services.media import MediaError, missing_binary_msg
 from app.services.subtitles import write_srt
 
 logger = logging.getLogger(__name__)
 
 
 def _run(cmd: list[str], timeout: int = 3600) -> None:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as e:
+        raise MediaError(missing_binary_msg(cmd[0])) from e
     if proc.returncode != 0:
         raise MediaError(f"合成命令失败: {' '.join(cmd[:8])}...\n{proc.stderr[-2000:]}")
 
@@ -152,11 +155,14 @@ def _cut_and_normalize(
 
 def _has_audio(path: str | Path) -> bool:
     settings = get_settings()
-    proc = subprocess.run(
-        [settings.ffprobe_bin, "-v", "error", "-select_streams", "a",
-         "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [settings.ffprobe_bin, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError as e:
+        raise MediaError(missing_binary_msg(settings.ffprobe_bin)) from e
     return "audio" in proc.stdout
 
 

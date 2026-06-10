@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import jobs, materials, scripts
 from app.config import get_settings
 from app.database import init_db
+from app.services.media import check_tools, missing_binary_msg
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,8 +26,17 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    get_settings().ensure_dirs()
+    settings = get_settings()
+    settings.ensure_dirs()
     init_db()
+    tools = check_tools()
+    for name, ok in tools.items():
+        if not ok:
+            bin_path = settings.ffmpeg_bin if name == "ffmpeg" else settings.ffprobe_bin
+            logging.getLogger("app").warning(
+                "依赖检测失败: %s 不可用！素材分析与渲染将无法工作。%s",
+                name, missing_binary_msg(bin_path),
+            )
     yield
 
 
@@ -51,7 +61,8 @@ app.include_router(jobs.router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    tools = check_tools()
+    return {"status": "ok" if all(tools.values()) else "degraded", "tools": tools}
 
 
 # Web 管理界面

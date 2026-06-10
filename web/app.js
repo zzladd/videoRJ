@@ -311,6 +311,17 @@ setInterval(() => {
   }
 }, 4000);
 
+// ---------- 启动依赖检测 ----------
+(async () => {
+  try {
+    const h = await req("/api/health");
+    if (h.status !== "ok") {
+      const missing = Object.entries(h.tools || {}).filter(([, ok]) => !ok).map(([k]) => k).join(" / ");
+      toast(`依赖缺失：${missing} 不可用，请安装 ffmpeg 并配置 PATH 或 .env 中的 FFMPEG_BIN，否则分析与渲染会失败`, true);
+    }
+  } catch {}
+})();
+
 // 初始加载
 loadMaterials();
 loadScripts();

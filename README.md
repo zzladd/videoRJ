@@ -23,6 +23,18 @@
 
 依赖：Python 3.11+、ffmpeg（含 libass）
 
+**安装 ffmpeg**（必须，转码/分析/合成都依赖它）：
+
+- Windows：`winget install Gyan.FFmpeg`（装完**重开终端**生效）；或从 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下载 full 版解压，把 `bin` 目录加入 PATH，或在 `.env` 中配置完整路径：
+  ```
+  FFMPEG_BIN=D:\ffmpeg\bin\ffmpeg.exe
+  FFPROBE_BIN=D:\ffmpeg\bin\ffprobe.exe
+  ```
+- macOS：`brew install ffmpeg`
+- Ubuntu/Debian：`sudo apt install ffmpeg`
+
+验证：终端执行 `ffmpeg -version` 有输出即可；启动后也可访问 `/api/health` 查看依赖检测结果。
+
 ```bash
 # 1. 安装依赖
 pip install -r requirements.txt
