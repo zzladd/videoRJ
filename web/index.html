@@ -74,6 +74,13 @@
     </section>
   </main>
 
+  <!-- 素材多选浮动操作栏 -->
+  <div id="select-bar" class="select-bar hidden">
+    <span id="select-count">已选 0 个素材</span>
+    <button class="btn primary" onclick="openRenderModal()">渲染所选素材</button>
+    <button class="btn" onclick="clearSelection()">取消选择</button>
+  </div>
+
   <!-- 脚本编辑弹窗 -->
   <div id="modal" class="modal hidden">
     <div class="modal-box">

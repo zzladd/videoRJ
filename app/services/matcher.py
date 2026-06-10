@@ -182,3 +182,87 @@ def _match_shot(
         transition=shot.transition,
         transition_duration=shot.transition_duration,
     )
+
+
+def build_auto_timeline(
+    db: Session,
+    tenant_id: str,
+    material_ids: list[str],
+    target_duration: float = 30.0,
+    clip_duration: float = 3.5,
+    transition: str = "dissolve",
+    transition_duration: float = 0.4,
+) -> list[TimelineClip]:
+    """无脚本自动混剪：在所选素材间轮流取片段，直到凑够目标时长。
+
+    片段按素材轮换（round-robin）保证交叉混剪；每个片段内部按时间窗口
+    顺序消费，画面不重复；素材全部耗尽则提前结束。
+    """
+    rows = (
+        db.query(Segment, Material)
+        .join(Material, Segment.material_id == Material.id)
+        .filter(
+            Material.tenant_id == tenant_id,
+            Material.status == "ready",
+            Material.id.in_(material_ids),
+        )
+        .order_by(Segment.start)
+        .all()
+    )
+    if not rows:
+        raise MatchError("所选素材中没有可用片段，请确认素材已分析完成")
+
+    # 每个素材一个片段队列（保持素材内时间顺序）
+    queues: dict[str, list[Segment]] = {}
+    for seg, mat in rows:
+        queues.setdefault(mat.id, []).append(seg)
+    # 按用户选择顺序轮换
+    order = [mid for mid in material_ids if mid in queues]
+
+    offsets: dict[str, float] = {}  # segment_id -> 已消费到的时间点
+    timeline: list[TimelineClip] = []
+    effective = 0.0  # 计入转场重叠后的成片时长
+    shot = 1
+    exhausted: set[str] = set()
+
+    while effective < target_duration and len(exhausted) < len(order):
+        for mid in order:
+            if effective >= target_duration or mid in exhausted:
+                continue
+            clip = _next_window(queues[mid], offsets, clip_duration)
+            if clip is None:
+                exhausted.add(mid)
+                continue
+            start, end, seg = clip
+            trans = "fade" if shot == 1 else transition
+            overlap = 0.0 if shot == 1 else min(transition_duration, end - start)
+            timeline.append(TimelineClip(
+                shot_index=shot,
+                material_id=mid,
+                segment_id=seg.id,
+                start=start,
+                end=end,
+                narration="",
+                transition=trans,
+                transition_duration=transition_duration,
+            ))
+            effective += (end - start) - overlap
+            shot += 1
+    if not timeline:
+        raise MatchError("所选素材时长不足，无法生成时间线")
+    return timeline
+
+
+def _next_window(
+    segments: list[Segment], offsets: dict[str, float], clip_duration: float,
+) -> tuple[float, float, Segment] | None:
+    """取该素材下一个未消费的时间窗口；全部耗尽返回 None。"""
+    for seg in segments:
+        cursor = offsets.get(seg.id, seg.start)
+        remaining = seg.end - cursor
+        if remaining < 1.0:
+            continue
+        end = min(seg.end, cursor + clip_duration)
+        offsets[seg.id] = end
+        return cursor, end, seg
+    return None

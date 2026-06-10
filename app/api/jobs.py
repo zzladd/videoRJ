@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_tenant
 from app.database import get_db
-from app.models import RenderJob, Script
-from app.schemas import RenderJobOut, RenderOptionsIn
+from app.models import Material, RenderJob, Script
+from app.schemas import DirectRenderIn, RenderJobOut, RenderOptionsIn
 from app.tasks.runner import dispatch
 
 router = APIRouter(prefix="/api", tags=["渲染任务"])
@@ -19,6 +19,55 @@ def _to_out(job: RenderJob) -> RenderJobOut:
     if job.status == "success" and job.output_path:
         out.output_url = f"/api/jobs/{job.id}/output"
     return out
+
+
+@router.post("/render", response_model=RenderJobOut)
+def submit_direct_render(
+    body: DirectRenderIn,
+    tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    """直接渲染：手动选择多个素材 + 一个脚本（可选）。
+
+    - 选了脚本：在所选素材范围内按脚本关键词智能匹配片段
+    - 不选脚本：自动混剪——所选素材轮流取片段、叠化转场、保留原声
+    """
+    wanted = list(dict.fromkeys(body.material_ids))  # 去重保序
+    mats = (
+        db.query(Material)
+        .filter(Material.id.in_(wanted), Material.tenant_id == tenant)
+        .all()
+    )
+    found = {m.id: m for m in mats}
+    missing = [mid for mid in wanted if mid not in found]
+    if missing:
+        raise HTTPException(404, f"素材不存在: {missing}")
+    not_ready = [m.title or m.id for m in mats if m.status != "ready"]
+    if not_ready:
+        raise HTTPException(400, f"素材尚未分析完成: {not_ready}")
+
+    if body.script_id:
+        script = db.get(Script, body.script_id)
+        if script is None or script.tenant_id != tenant:
+            raise HTTPException(404, "脚本不存在")
+        if not script.execution:
+            raise HTTPException(400, "脚本尚未生成执行脚本 JSON")
+
+    options = {
+        "material_ids": wanted,
+        "target_duration": body.target_duration,
+        "clip_duration": body.clip_duration,
+    }
+    for key in ("width", "height", "subtitle_mode", "keep_source_audio"):
+        value = getattr(body, key)
+        if value is not None:
+            options[key] = value
+
+    job = RenderJob(tenant_id=tenant, script_id=body.script_id or "", options=options)
+    db.add(job)
+    db.commit()
+    dispatch("render_job", job.id)
+    return _to_out(job)
 
 
 @router.post("/scripts/{script_id}/render", response_model=RenderJobOut)

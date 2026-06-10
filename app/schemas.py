@@ -135,6 +135,19 @@ class RenderOptionsIn(BaseModel):
     material_ids: list[str] | None = None  # 限定素材池（可选）
 
 
+class DirectRenderIn(BaseModel):
+    """直接渲染：手动选择多个素材 + 一个脚本（或不用脚本走自动混剪）。"""
+
+    material_ids: list[str] = Field(min_length=1)
+    script_id: str | None = None  # 为空 = 无脚本自动混剪
+    target_duration: float = Field(default=30.0, gt=3, le=600)  # 仅无脚本时生效
+    clip_duration: float = Field(default=3.5, ge=1.5, le=10)  # 无脚本时单镜头时长
+    width: int | None = None
+    height: int | None = None
+    subtitle_mode: Literal["burn", "soft", "none"] | None = None
+    keep_source_audio: bool | None = None  # 无脚本默认保留原声，有脚本默认静音
+
+
 class RenderJobOut(BaseModel):
     id: str
     script_id: str

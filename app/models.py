@@ -112,7 +112,8 @@ class RenderJob(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
-    script_id: Mapped[str] = mapped_column(ForeignKey("scripts.id"), index=True)
+    # 空字符串 = 无脚本的自动混剪任务（素材列表见 options.material_ids）
+    script_id: Mapped[str] = mapped_column(String(32), default="", index=True)
     # queued | matching | rendering | success | failed | canceled
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     progress: Mapped[float] = mapped_column(Float, default=0.0)  # 0 ~ 1

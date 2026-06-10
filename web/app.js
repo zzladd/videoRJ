@@ -54,17 +54,47 @@ document.querySelectorAll(".tab").forEach(btn => {
   });
 });
 
-// ---------- 素材 ----------
+// ---------- 素材（支持多选后渲染） ----------
+const selectedMats = new Set();
+
+function updateSelectBar() {
+  const bar = document.getElementById("select-bar");
+  document.getElementById("select-count").textContent = `已选 ${selectedMats.size} 个素材`;
+  bar.classList.toggle("hidden", selectedMats.size === 0);
+}
+
+window.toggleMatSelect = (id, checked) => {
+  if (checked) selectedMats.add(id); else selectedMats.delete(id);
+  document.querySelector(`.mat-card[data-id="${id}"]`)?.classList.toggle("selected", checked);
+  updateSelectBar();
+};
+
+window.clearSelection = () => {
+  selectedMats.clear();
+  document.querySelectorAll(".mat-card.selected").forEach(el => el.classList.remove("selected"));
+  document.querySelectorAll(".mat-check").forEach(el => { el.checked = false; });
+  updateSelectBar();
+};
+
 async function loadMaterials() {
   const list = document.getElementById("material-list");
   try {
     const mats = await req("/api/materials");
+    // 清理已不存在的选中项
+    const existing = new Set(mats.map(m => m.id));
+    [...selectedMats].forEach(id => { if (!existing.has(id)) selectedMats.delete(id); });
+    updateSelectBar();
     if (!mats.length) {
       list.innerHTML = '<div class="empty">暂无素材，请上传视频或粘贴链接</div>';
       return;
     }
     list.innerHTML = mats.map(m => `
-      <div class="mat-card">
+      <div class="mat-card ${selectedMats.has(m.id) ? "selected" : ""}" data-id="${m.id}">
+        ${m.status === "ready"
+          ? `<input type="checkbox" class="mat-check" title="选择该素材参与混剪"
+               ${selectedMats.has(m.id) ? "checked" : ""}
+               onchange="toggleMatSelect('${m.id}', this.checked)">`
+          : ""}
         ${m.cover_url
           ? `<img class="mat-cover" src="${m.cover_url}" loading="lazy">`
           : `<div class="mat-cover-placeholder">🎞️</div>`}
@@ -233,10 +263,82 @@ window.regenExecution = async id => {
   } catch (e) { toast(e.message, true); }
 };
 
-window.renderScript = async id => {
+window.renderScript = id => openRenderModal(id);
+
+// ---------- 渲染弹窗：手动选择多个素材 + 一个脚本（或不用脚本自动混剪） ----------
+const pickState = new Set();
+
+window.openRenderModal = async (scriptId = "") => {
+  let mats, scripts;
   try {
-    await req(`/api/scripts/${id}/render`, { method: "POST", json: {} });
+    [mats, scripts] = await Promise.all([req("/api/materials?status=ready"), req("/api/scripts")]);
+  } catch (e) { toast(e.message, true); return; }
+  if (!mats.length) { toast("没有已分析完成的素材，请先上传并等待分析", true); return; }
+  const readyScripts = scripts.filter(s => s.execution);
+
+  pickState.clear();
+  selectedMats.forEach(id => pickState.add(id));
+
+  openModal("提交渲染", `
+    <div class="modal-body">
+      <label>1️⃣ 选择素材（可多选，点击卡片切换）</label>
+      <div class="pick-grid">
+        ${mats.map(m => `
+          <div class="pick-item ${pickState.has(m.id) ? "selected" : ""}" data-id="${m.id}" onclick="togglePick('${m.id}')">
+            ${m.cover_url ? `<img src="${m.cover_url}" loading="lazy">` : ""}
+            <div class="pick-title" title="${esc(m.title)}">${esc(m.title) || "(未命名)"}</div>
+          </div>`).join("")}
+      </div>
+      <label>2️⃣ 选择脚本（不选则自动混剪：素材轮流取片段 + 叠化转场 + 保留原声）</label>
+      <select id="rm-script" onchange="onRenderScriptChange()">
+        <option value="">不使用脚本（自动混剪）</option>
+        ${readyScripts.map(s => `<option value="${s.id}" ${s.id === scriptId ? "selected" : ""}>${esc(s.title) || s.id.slice(0, 8)}</option>`).join("")}
+      </select>
+      <div class="opt-row" id="rm-duration-row">
+        <label>成片时长(秒)</label>
+        <input id="rm-duration" type="number" value="30" min="5" max="600" style="width:100px">
+        <label>单镜头时长(秒)</label>
+        <input id="rm-clip" type="number" value="3.5" min="1.5" max="10" step="0.5" style="width:100px">
+      </div>
+      <div class="opt-row">
+        <label><input id="rm-audio" type="checkbox" style="width:auto"> 保留素材原声</label>
+      </div>
+      <div style="margin-top:16px">
+        <button class="btn primary" onclick="submitRender()">提交渲染</button>
+      </div>
+    </div>`);
+  onRenderScriptChange();
+};
+
+window.togglePick = id => {
+  if (pickState.has(id)) pickState.delete(id); else pickState.add(id);
+  document.querySelector(`.pick-item[data-id="${id}"]`)?.classList.toggle("selected", pickState.has(id));
+};
+
+window.onRenderScriptChange = () => {
+  const hasScript = !!document.getElementById("rm-script").value;
+  document.getElementById("rm-duration-row").style.display = hasScript ? "none" : "flex";
+  // 无脚本默认保留原声（否则成片无声）；有脚本默认静音配字幕
+  document.getElementById("rm-audio").checked = !hasScript;
+};
+
+window.submitRender = async () => {
+  if (!pickState.size) { toast("请至少选择一个素材", true); return; }
+  const scriptId = document.getElementById("rm-script").value;
+  const body = {
+    material_ids: [...pickState],
+    script_id: scriptId || null,
+    keep_source_audio: document.getElementById("rm-audio").checked,
+  };
+  if (!scriptId) {
+    body.target_duration = Number(document.getElementById("rm-duration").value) || 30;
+    body.clip_duration = Number(document.getElementById("rm-clip").value) || 3.5;
+  }
+  try {
+    await req("/api/render", { method: "POST", json: body });
     toast("渲染任务已提交");
+    closeModal();
+    clearSelection();
     document.querySelector('[data-tab="jobs"]').click();
     loadJobs();
   } catch (e) { toast("提交失败: " + e.message, true); }
@@ -261,7 +363,7 @@ async function loadJobs() {
     list.innerHTML = jobs.map(j => `
       <div class="row-item">
         <div class="row-head">
-          <span class="row-title">任务 ${j.id.slice(0, 8)}</span>
+          <span class="row-title">任务 ${j.id.slice(0, 8)}${j.script_id ? "" : "（自动混剪）"}</span>
           <span class="badge ${j.status}">${STATUS_TEXT[j.status] || j.status}</span>
           <span class="row-meta">${esc(j.message || "")}</span>
           <div class="row-actions">
