@@ -59,7 +59,7 @@ def main() -> None:
         # 1. 健康检查
         assert client.get("/api/health").json()["status"] == "ok"
         assert client.get("/").status_code == 200
-        print("[1/8] 健康检查 OK")
+        print("[1/9] 健康检查 OK")
 
         # 2. 上传两个素材
         material_ids = []
@@ -74,7 +74,7 @@ def main() -> None:
                 )
             assert resp.status_code == 200, resp.text
             material_ids.append(resp.json()["id"])
-        print("[2/8] 素材上传 OK")
+        print("[2/9] 素材上传 OK")
 
         # 3. 等待分析完成
         def all_ready():
@@ -94,7 +94,7 @@ def main() -> None:
             assert m["segment_count"] > 0, "未切分出片段"
         segs = client.get(f"/api/materials/{material_ids[0]}/segments").json()
         assert len(segs) > 0
-        print(f"[3/8] 素材分析 OK（片段数: {[m['segment_count'] for m in mats]}）")
+        print(f"[3/9] 素材分析 OK（片段数: {[m['segment_count'] for m in mats]}）")
 
         # 4. AI 生成脚本
         resp = client.post("/api/scripts/generate", json={
@@ -106,7 +106,7 @@ def main() -> None:
         script = resp.json()
         assert script["content"], "内容脚本为空"
         assert script["execution"] and script["execution"]["shots"], "执行脚本为空"
-        print(f"[4/8] AI 脚本生成 OK（镜头数: {len(script['execution']['shots'])}）")
+        print(f"[4/9] AI 脚本生成 OK（镜头数: {len(script['execution']['shots'])}）")
 
         # 5. 编辑执行脚本（降低分辨率加速测试）+ 提交渲染
         execution = script["execution"]
@@ -127,7 +127,7 @@ def main() -> None:
         job = wait_for(job_done, timeout=300)
         assert job["timeline"], "时间线为空"
         assert job["output_url"], "无成片地址"
-        print(f"[5/8] 渲染 OK（时间线片段数: {len(job['timeline'])}）")
+        print(f"[5/9] 渲染 OK（时间线片段数: {len(job['timeline'])}）")
 
         # 6. 成片预览/下载与字幕
         resp = client.get(job["output_url"])
@@ -144,7 +144,7 @@ def main() -> None:
         )
         duration = float(probe.stdout.strip())
         assert duration > 5, f"成片时长异常: {duration}"
-        print(f"[6/8] 成片下载/预览/字幕 OK（成片时长: {duration:.1f}s）")
+        print(f"[6/9] 成片下载/预览/字幕 OK（成片时长: {duration:.1f}s）")
 
         # 7. 直接渲染：手动选素材 + 脚本（限定素材池）
         resp = client.post("/api/render", json={
@@ -164,7 +164,7 @@ def main() -> None:
         job2 = wait_for(job2_done, timeout=300)
         used = {c["material_id"] for c in job2["timeline"]}
         assert used.issubset(set(material_ids)), "使用了所选范围之外的素材"
-        print(f"[7/8] 手动选素材+脚本渲染 OK（使用素材数: {len(used)}）")
+        print(f"[7/9] 手动选素材+脚本渲染 OK（使用素材数: {len(used)}）")
 
         # 8. 直接渲染：无脚本自动混剪（保留原声、无字幕）
         resp = client.post("/api/render", json={
@@ -188,7 +188,45 @@ def main() -> None:
         assert all(not c["narration"] for c in job3["timeline"]), "自动混剪不应有字幕文案"
         resp = client.get(f"/api/jobs/{job_id3}/subtitles")
         assert resp.status_code == 404, "自动混剪不应生成字幕文件"
-        print(f"[8/8] 无脚本自动混剪 OK（片段数: {len(seq)}, 素材轮换: {seq})")
+        print(f"[8/9] 无脚本自动混剪 OK（片段数: {len(seq)}, 素材轮换: {seq})")
+
+        # 9. 手动剪辑：自定义时间线渲染（剪辑台）
+        segs0 = client.get(f"/api/materials/{material_ids[0]}/segments").json()
+        segs1 = client.get(f"/api/materials/{material_ids[1]}/segments").json()
+        # 片段缩略图可访问
+        thumb = client.get(f"/api/materials/{material_ids[0]}/segments/{segs0[0]['id']}/thumb")
+        assert thumb.status_code == 200, "片段缩略图不可访问"
+        resp = client.post("/api/render/timeline", json={
+            "clips": [
+                {"material_id": material_ids[0], "segment_id": segs0[0]["id"],
+                 "start": 0.5, "end": 2.5, "transition": "cut", "narration": "第一段画面"},
+                {"material_id": material_ids[1], "segment_id": segs1[0]["id"],
+                 "start": 1.0, "end": 3.5, "transition": "dissolve", "narration": "第二段画面"},
+                {"material_id": material_ids[0], "segment_id": segs0[0]["id"],
+                 "start": 3.0, "end": 5.0, "transition": "wipe", "narration": ""},
+            ],
+            "width": 360, "height": 640,
+            "keep_source_audio": True, "subtitle_mode": "burn",
+        })
+        assert resp.status_code == 200, resp.text
+        job4 = resp.json()
+        assert job4["kind"] == "manual", f"任务类型应为 manual: {job4['kind']}"
+        job_id4 = job4["id"]
+
+        def job4_done():
+            j = client.get(f"/api/jobs/{job_id4}").json()
+            if j["status"] == "failed":
+                raise RuntimeError(f"手动剪辑渲染失败: {j['message']}")
+            return j if j["status"] == "success" else None
+
+        job4 = wait_for(job4_done, timeout=300)
+        tl = job4["timeline"]
+        assert len(tl) == 3, "时间线片段数不符"
+        assert [c["material_id"] for c in tl] == [material_ids[0], material_ids[1], material_ids[0]], "片段顺序不符"
+        assert abs(tl[0]["start"] - 0.5) < 0.01 and abs(tl[0]["end"] - 2.5) < 0.01, "裁剪起止点不符"
+        srt = client.get(f"/api/jobs/{job_id4}/subtitles")
+        assert srt.status_code == 200 and "第一段画面" in srt.text, "手动剪辑字幕缺失"
+        print(f"[9/9] 手动剪辑时间线渲染 OK（按编排顺序合成 {len(tl)} 段，含字幕与转场）")
 
     if failures:
         print("失败项:", failures)

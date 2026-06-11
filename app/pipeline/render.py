@@ -6,9 +6,33 @@ from app.database import SessionLocal
 from app.models import Material, RenderJob, Script
 from app.schemas import ExecutionScript
 from app.services.composer import compose
-from app.services.matcher import build_auto_timeline, match_script
+from app.services.matcher import TimelineClip, build_auto_timeline, match_script
 
 logger = logging.getLogger(__name__)
+
+
+def _timeline_from_custom(db, clips: list[dict]) -> list[TimelineClip]:
+    """把剪辑台提交的自定义时间线转为 TimelineClip，起止点收敛到素材实际时长内。"""
+    material_ids = {c["material_id"] for c in clips}
+    mats = {m.id: m for m in db.query(Material).filter(Material.id.in_(material_ids)).all()}
+    timeline: list[TimelineClip] = []
+    for i, c in enumerate(clips):
+        mat = mats.get(c["material_id"])
+        if mat is None:
+            raise ValueError(f"素材不存在: {c['material_id']}")
+        start = max(0.0, min(float(c["start"]), mat.duration - 0.2))
+        end = max(start + 0.2, min(float(c["end"]), mat.duration))
+        timeline.append(TimelineClip(
+            shot_index=i + 1,
+            material_id=mat.id,
+            segment_id=c.get("segment_id"),
+            start=start,
+            end=end,
+            narration=c.get("narration", ""),
+            transition=c.get("transition", "cut"),
+            transition_duration=float(c.get("transition_duration", 0.4)),
+        ))
+    return timeline
 
 
 def run_render_job(job_id: str) -> None:
@@ -28,7 +52,20 @@ def run_render_job(job_id: str) -> None:
             job.message = "正在匹配素材片段"
             db.commit()
 
-            if job.script_id:
+            if opts.get("custom_timeline"):
+                # 手动剪辑：直接采用用户编排的时间线（起止点按素材时长收敛）
+                timeline = _timeline_from_custom(db, opts["custom_timeline"])
+                has_narration = any(c.narration for c in timeline)
+                render_params = dict(
+                    width=int(opts.get("width") or 1080),
+                    height=int(opts.get("height") or 1920),
+                    fps=30,
+                    keep_source_audio=bool(opts.get("keep_source_audio", True)),
+                    bgm_path=None,
+                    subtitle_mode=(opts.get("subtitle_mode") or "burn") if has_narration else "none",
+                    subtitle_font_size=16,
+                )
+            elif job.script_id:
                 script_row = db.get(Script, job.script_id)
                 if script_row is None or not script_row.execution:
                     raise ValueError("脚本不存在或尚未生成执行脚本")

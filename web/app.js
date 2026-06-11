@@ -51,6 +51,7 @@ document.querySelectorAll(".tab").forEach(btn => {
     document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "editor" && !binLoaded) loadEditorBin();
   });
 });
 
@@ -363,7 +364,7 @@ async function loadJobs() {
     list.innerHTML = jobs.map(j => `
       <div class="row-item">
         <div class="row-head">
-          <span class="row-title">任务 ${j.id.slice(0, 8)}${j.script_id ? "" : "（自动混剪）"}</span>
+          <span class="row-title">任务 ${j.id.slice(0, 8)}${{ auto: "（自动混剪）", manual: "（手动剪辑）" }[j.kind] || ""}</span>
           <span class="badge ${j.status}">${STATUS_TEXT[j.status] || j.status}</span>
           <span class="row-meta">${esc(j.message || "")}</span>
           <div class="row-actions">
@@ -391,6 +392,213 @@ window.delJob = async id => {
   catch (e) { toast(e.message, true); }
 };
 document.getElementById("refresh-jobs").addEventListener("click", loadJobs);
+
+// ---------- 剪辑台：拖拽片段拼接 ----------
+let tlClips = [];        // 时间线状态
+let binLoaded = false;
+let dragData = null;     // { type: 'bin'|'tl', payload|index }
+
+async function loadEditorBin() {
+  const bin = document.getElementById("editor-bin");
+  try {
+    const mats = (await req("/api/materials?status=ready"));
+    if (!mats.length) {
+      bin.innerHTML = '<div class="empty">暂无已分析完成的素材</div>';
+      return;
+    }
+    const blocks = await Promise.all(mats.map(async m => {
+      const segs = await req(`/api/materials/${m.id}/segments`);
+      if (!segs.length) return "";
+      const chips = segs.map(s => {
+        const payload = esc(JSON.stringify({
+          material_id: m.id, mat_title: m.title, segment_id: s.id,
+          seg_start: s.start, seg_end: s.end,
+          thumb: `/api/materials/${m.id}/segments/${s.id}/thumb`,
+        }));
+        return `
+          <div class="seg-chip" draggable="true" data-payload="${payload}" title="拖拽到时间线，或点击追加">
+            <img src="/api/materials/${m.id}/segments/${s.id}/thumb" loading="lazy">
+            <div class="seg-label">${s.start.toFixed(1)}s - ${s.end.toFixed(1)}s（${(s.end - s.start).toFixed(1)}s）</div>
+          </div>`;
+      }).join("");
+      return `
+        <div class="bin-material">
+          <div class="bin-material-title">🎞️ ${esc(m.title) || "(未命名)"} <span class="row-meta">${segs.length} 个片段</span></div>
+          <div class="bin-segments">${chips}</div>
+        </div>`;
+    }));
+    bin.innerHTML = blocks.join("") || '<div class="empty">素材尚无片段</div>';
+    bin.querySelectorAll(".seg-chip").forEach(chip => {
+      chip.addEventListener("dragstart", e => {
+        dragData = { type: "bin", payload: JSON.parse(chip.dataset.payload) };
+        chip.classList.add("dragging");
+      });
+      chip.addEventListener("dragend", () => chip.classList.remove("dragging"));
+      chip.addEventListener("click", () => {
+        addClipToTimeline(JSON.parse(chip.dataset.payload), tlClips.length);
+      });
+    });
+    binLoaded = true;
+  } catch (e) { bin.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`; }
+}
+
+function addClipToTimeline(p, index) {
+  tlClips.splice(index, 0, {
+    material_id: p.material_id,
+    segment_id: p.segment_id,
+    mat_title: p.mat_title,
+    seg_start: p.seg_start, seg_end: p.seg_end,   // 可裁剪范围
+    start: p.seg_start, end: p.seg_end,           // 当前裁剪
+    transition: tlClips.length ? "dissolve" : "cut",
+    transition_duration: 0.4,
+    narration: "",
+    thumb: p.thumb,
+  });
+  renderTimeline();
+}
+
+function tlTotalDuration() {
+  let total = 0;
+  tlClips.forEach((c, i) => {
+    const d = c.end - c.start;
+    total += d;
+    if (i > 0 && c.transition !== "cut") total -= Math.min(c.transition_duration, d / 2);
+  });
+  return Math.max(0, total);
+}
+
+function renderTimeline() {
+  const tl = document.getElementById("timeline");
+  document.getElementById("tl-total").textContent =
+    tlClips.length ? `共 ${tlClips.length} 段 · 预计 ${tlTotalDuration().toFixed(1)} 秒` : "";
+  if (!tlClips.length) {
+    tl.innerHTML = '<div class="empty" id="tl-empty">从上方拖拽片段到这里开始剪辑</div>';
+    return;
+  }
+  tl.innerHTML = tlClips.map((c, i) => `
+    <div class="tl-clip" draggable="true" data-index="${i}">
+      <img src="${c.thumb}">
+      <div class="tl-body">
+        <div class="tl-row">
+          <span class="tl-order">#${i + 1}</span>
+          <span class="tl-name" title="${esc(c.mat_title)}">${esc(c.mat_title) || "素材"}</span>
+          <button class="tl-del" onclick="removeClip(${i})" title="移除">✕</button>
+        </div>
+        <div class="tl-row">
+          <input type="number" step="0.1" min="${c.seg_start}" max="${c.seg_end}" value="${c.start}"
+            onchange="updateClip(${i}, 'start', this.value)" title="起点(秒)">
+          <span>→</span>
+          <input type="number" step="0.1" min="${c.seg_start}" max="${c.seg_end}" value="${c.end}"
+            onchange="updateClip(${i}, 'end', this.value)" title="终点(秒)">
+          <span>${(c.end - c.start).toFixed(1)}s</span>
+        </div>
+        <div class="tl-row">
+          <select onchange="updateClip(${i}, 'transition', this.value)" title="进入该段的转场" ${i === 0 ? "disabled" : ""}>
+            ${["cut|硬切", "dissolve|叠化", "fade|黑场", "slide|滑动", "wipe|划像"].map(o => {
+              const [v, t] = o.split("|");
+              return `<option value="${v}" ${c.transition === v ? "selected" : ""}>${t}</option>`;
+            }).join("")}
+          </select>
+        </div>
+        <input type="text" placeholder="字幕文案（可选）" value="${esc(c.narration)}"
+          onchange="updateClip(${i}, 'narration', this.value)">
+      </div>
+    </div>`).join("");
+
+  tl.querySelectorAll(".tl-clip").forEach(el => {
+    el.addEventListener("dragstart", e => {
+      // 输入框内不触发整卡拖拽
+      if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") { e.preventDefault(); return; }
+      dragData = { type: "tl", index: Number(el.dataset.index) };
+      el.classList.add("dragging");
+    });
+    el.addEventListener("dragend", () => el.classList.remove("dragging"));
+  });
+}
+
+window.updateClip = (i, key, value) => {
+  const c = tlClips[i];
+  if (!c) return;
+  if (key === "start" || key === "end") {
+    let v = Math.min(c.seg_end, Math.max(c.seg_start, Number(value) || 0));
+    c[key] = v;
+    if (c.end - c.start < 0.3) {  // 保证至少 0.3s
+      if (key === "start") c.start = Math.max(c.seg_start, c.end - 0.3);
+      else c.end = Math.min(c.seg_end, c.start + 0.3);
+    }
+  } else if (key === "narration") {
+    c.narration = value;
+    return;  // 不重绘，避免输入框失焦
+  } else {
+    c[key] = value;
+  }
+  renderTimeline();
+};
+
+window.removeClip = i => { tlClips.splice(i, 1); renderTimeline(); };
+window.clearTimeline = () => { tlClips = []; renderTimeline(); };
+
+function dropIndexFromX(tl, clientX) {
+  const cards = [...tl.querySelectorAll(".tl-clip")];
+  for (let i = 0; i < cards.length; i++) {
+    const r = cards[i].getBoundingClientRect();
+    if (clientX < r.left + r.width / 2) return i;
+  }
+  return cards.length;
+}
+
+(function initTimelineDnD() {
+  const tl = document.getElementById("timeline");
+  tl.addEventListener("dragover", e => { e.preventDefault(); tl.classList.add("dragover"); });
+  tl.addEventListener("dragleave", () => tl.classList.remove("dragover"));
+  tl.addEventListener("drop", e => {
+    e.preventDefault();
+    tl.classList.remove("dragover");
+    if (!dragData) return;
+    const idx = dropIndexFromX(tl, e.clientX);
+    if (dragData.type === "bin") {
+      addClipToTimeline(dragData.payload, idx);
+    } else if (dragData.type === "tl") {
+      const from = dragData.index;
+      let to = idx;
+      if (to > from) to -= 1;
+      if (to !== from) {
+        const [moved] = tlClips.splice(from, 1);
+        tlClips.splice(to, 0, moved);
+        renderTimeline();
+      }
+    }
+    dragData = null;
+  });
+})();
+
+window.submitTimeline = async () => {
+  if (!tlClips.length) { toast("时间线为空，请先拖入片段", true); return; }
+  const [w, h] = document.getElementById("tl-res").value.split("x").map(Number);
+  try {
+    await req("/api/render/timeline", {
+      method: "POST",
+      json: {
+        clips: tlClips.map(c => ({
+          material_id: c.material_id,
+          segment_id: c.segment_id,
+          start: c.start, end: c.end,
+          transition: c.transition,
+          transition_duration: c.transition_duration,
+          narration: c.narration,
+        })),
+        width: w, height: h,
+        keep_source_audio: document.getElementById("tl-audio").checked,
+        subtitle_mode: document.getElementById("tl-subtitle").value,
+      },
+    });
+    toast("剪辑任务已提交");
+    document.querySelector('[data-tab="jobs"]').click();
+    loadJobs();
+  } catch (e) { toast("提交失败: " + e.message, true); }
+};
+
+document.getElementById("refresh-editor").addEventListener("click", loadEditorBin);
 
 // ---------- 弹窗 ----------
 function openModal(title, bodyHtml) {

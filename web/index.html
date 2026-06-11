@@ -12,6 +12,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="materials">素材库</button>
       <button class="tab" data-tab="scripts">AI 脚本</button>
+      <button class="tab" data-tab="editor">剪辑台</button>
       <button class="tab" data-tab="jobs">渲染任务</button>
     </nav>
   </header>
@@ -62,6 +63,38 @@
       <div class="card">
         <h2>脚本列表 <button id="refresh-scripts" class="btn small">刷新</button></h2>
         <div id="script-list"></div>
+      </div>
+    </section>
+
+    <!-- ====== 剪辑台 ====== -->
+    <section id="tab-editor" class="panel">
+      <div class="card">
+        <h2>素材片段库 <button id="refresh-editor" class="btn small">刷新</button></h2>
+        <p class="hint">每个素材按场景自动切分为片段。<b>拖拽</b>片段到下方时间线，或<b>点击</b>片段直接追加。</p>
+        <div id="editor-bin"></div>
+      </div>
+      <div class="card">
+        <h2>时间线 <span id="tl-total" class="row-meta"></span></h2>
+        <div id="timeline" class="timeline">
+          <div class="empty" id="tl-empty">从上方拖拽片段到这里开始剪辑</div>
+        </div>
+        <div class="opt-row">
+          <label>分辨率</label>
+          <select id="tl-res" style="width:160px">
+            <option value="1080x1920">1080×1920 竖屏</option>
+            <option value="1920x1080">1920×1080 横屏</option>
+            <option value="720x1280">720×1280 竖屏</option>
+          </select>
+          <label><input id="tl-audio" type="checkbox" checked style="width:auto"> 保留素材原声</label>
+          <label>字幕</label>
+          <select id="tl-subtitle" style="width:110px">
+            <option value="burn">烧录</option>
+            <option value="soft">软字幕</option>
+            <option value="none">无</option>
+          </select>
+          <button class="btn" onclick="clearTimeline()">清空</button>
+          <button class="btn primary" onclick="submitTimeline()">提交渲染</button>
+        </div>
       </div>
     </section>
 

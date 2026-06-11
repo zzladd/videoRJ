@@ -133,6 +133,25 @@ def get_transcript(material_id: str, tenant: str = Depends(get_tenant), db: Sess
     return [{"start": x.start, "end": x.end, "text": x.text} for x in lines]
 
 
+@router.get("/{material_id}/segments/{segment_id}/thumb")
+def get_segment_thumb(
+    material_id: str,
+    segment_id: str,
+    tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    """片段代表帧缩略图（剪辑台用）。"""
+    mat = _get_material(material_id, tenant, db)
+    seg = db.get(Segment, segment_id)
+    if seg is None or seg.material_id != material_id:
+        raise HTTPException(404, "片段不存在")
+    if seg.frame_path and Path(seg.frame_path).exists():
+        return FileResponse(seg.frame_path, media_type="image/jpeg")
+    if mat.cover_path and Path(mat.cover_path).exists():  # 无代表帧时退回封面
+        return FileResponse(mat.cover_path, media_type="image/jpeg")
+    raise HTTPException(404, "缩略图不存在")
+
+
 @router.get("/{material_id}/cover")
 def get_cover(material_id: str, tenant: str = Depends(get_tenant), db: Session = Depends(get_db)):
     mat = _get_material(material_id, tenant, db)

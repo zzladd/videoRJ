@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth import get_tenant
 from app.database import get_db
 from app.models import Material, RenderJob, Script
-from app.schemas import DirectRenderIn, RenderJobOut, RenderOptionsIn
+from app.schemas import DirectRenderIn, RenderJobOut, RenderOptionsIn, TimelineRenderIn
 from app.tasks.runner import dispatch
 
 router = APIRouter(prefix="/api", tags=["渲染任务"])
@@ -18,6 +18,12 @@ def _to_out(job: RenderJob) -> RenderJobOut:
     out = RenderJobOut.model_validate(job)
     if job.status == "success" and job.output_path:
         out.output_url = f"/api/jobs/{job.id}/output"
+    if job.script_id:
+        out.kind = "script"
+    elif (job.options or {}).get("custom_timeline"):
+        out.kind = "manual"
+    else:
+        out.kind = "auto"
     return out
 
 
@@ -64,6 +70,47 @@ def submit_direct_render(
             options[key] = value
 
     job = RenderJob(tenant_id=tenant, script_id=body.script_id or "", options=options)
+    db.add(job)
+    db.commit()
+    dispatch("render_job", job.id)
+    return _to_out(job)
+
+
+@router.post("/render/timeline", response_model=RenderJobOut)
+def submit_timeline_render(
+    body: TimelineRenderIn,
+    tenant: str = Depends(get_tenant),
+    db: Session = Depends(get_db),
+):
+    """手动剪辑渲染：按剪辑台拖拽编排的时间线直接合成（不经过匹配）。"""
+    wanted = list({c.material_id for c in body.clips})
+    mats = (
+        db.query(Material)
+        .filter(Material.id.in_(wanted), Material.tenant_id == tenant)
+        .all()
+    )
+    found = {m.id: m for m in mats}
+    missing = [mid for mid in wanted if mid not in found]
+    if missing:
+        raise HTTPException(404, f"素材不存在: {missing}")
+    not_ready = [m.title or m.id for m in mats if m.status != "ready"]
+    if not_ready:
+        raise HTTPException(400, f"素材尚未分析完成: {not_ready}")
+    for i, c in enumerate(body.clips):
+        mat = found[c.material_id]
+        if c.end <= c.start:
+            raise HTTPException(400, f"第 {i + 1} 段起止时间无效: {c.start} - {c.end}")
+        if c.start >= mat.duration:
+            raise HTTPException(400, f"第 {i + 1} 段起点超出素材时长（{mat.duration:.1f}s）")
+
+    options = {
+        "custom_timeline": [c.model_dump() for c in body.clips],
+        "width": body.width,
+        "height": body.height,
+        "keep_source_audio": body.keep_source_audio,
+        "subtitle_mode": body.subtitle_mode,
+    }
+    job = RenderJob(tenant_id=tenant, script_id="", options=options)
     db.add(job)
     db.commit()
     dispatch("render_job", job.id)

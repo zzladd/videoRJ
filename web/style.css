@@ -186,3 +186,43 @@ video.preview { width: 100%; max-width: 420px; border-radius: 10px; margin-top: 
 .pick-item .pick-title { font-size: 12px; padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .opt-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 .opt-row label { margin: 0; }
+
+/* ===== 剪辑台 ===== */
+.bin-material { margin-bottom: 14px; }
+.bin-material-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+.bin-segments { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+.seg-chip {
+  flex: 0 0 auto; width: 120px; border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; cursor: grab;
+  background: var(--panel-2); user-select: none;
+}
+.seg-chip:hover { border-color: var(--accent); }
+.seg-chip img { width: 100%; height: 68px; object-fit: cover; display: block; background: #000; pointer-events: none; }
+.seg-chip .seg-label { font-size: 11px; color: var(--muted); padding: 4px 6px; text-align: center; }
+.seg-chip.dragging { opacity: .4; }
+
+.timeline {
+  display: flex; gap: 10px; overflow-x: auto;
+  min-height: 190px; padding: 12px;
+  background: var(--bg); border: 2px dashed var(--border); border-radius: 10px;
+  align-items: flex-start;
+}
+.timeline.dragover { border-color: var(--accent); background: rgba(91,108,255,.06); }
+.tl-clip {
+  flex: 0 0 auto; width: 168px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  cursor: grab;
+}
+.tl-clip.dragging { opacity: .4; }
+.tl-clip img { width: 100%; height: 80px; object-fit: cover; display: block; background: #000; pointer-events: none; }
+.tl-clip .tl-body { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.tl-clip .tl-name { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-clip .tl-row { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); }
+.tl-clip input, .tl-clip select {
+  padding: 3px 6px; font-size: 11px; border-radius: 6px; width: 100%;
+}
+.tl-clip input[type="number"] { width: 54px; }
+.tl-clip .tl-order { font-weight: 700; color: var(--accent); font-size: 12px; }
+.tl-del { margin-left: auto; cursor: pointer; color: var(--muted); background: none; border: none; font-size: 13px; }
+.tl-del:hover { color: var(--red); }
+.tl-insert-marker { flex: 0 0 3px; align-self: stretch; background: var(--accent); border-radius: 2px; }

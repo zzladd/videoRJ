@@ -148,9 +148,32 @@ class DirectRenderIn(BaseModel):
     keep_source_audio: bool | None = None  # 无脚本默认保留原声，有脚本默认静音
 
 
+class TimelineClipIn(BaseModel):
+    """剪辑台时间线上的一个片段（手动指定素材与起止点）。"""
+
+    material_id: str
+    segment_id: str | None = None  # 来源片段（仅作留痕，可空）
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    transition: Literal["cut", "fade", "dissolve", "slide", "wipe"] = "cut"
+    transition_duration: float = Field(default=0.4, ge=0.1, le=1.5)
+    narration: str = ""  # 该片段的字幕文案（可选）
+
+
+class TimelineRenderIn(BaseModel):
+    """手动剪辑渲染：按用户拖拽编排的时间线直接合成。"""
+
+    clips: list[TimelineClipIn] = Field(min_length=1)
+    width: int = Field(default=1080, ge=128, le=4096)
+    height: int = Field(default=1920, ge=128, le=4096)
+    keep_source_audio: bool = True
+    subtitle_mode: Literal["burn", "soft", "none"] = "burn"
+
+
 class RenderJobOut(BaseModel):
     id: str
     script_id: str
+    kind: str = "script"  # script | auto | manual
     status: str
     progress: float
     message: str
