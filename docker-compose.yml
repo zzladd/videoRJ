@@ -1,0 +1,52 @@
+# 自用模式：仅启动 api（TASK_BACKEND=inline，任务在 api 进程内执行）
+#   docker compose up api
+# SaaS 模式：启动全部服务（redis + celery worker 水平扩展）
+#   docker compose --profile saas up
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATA_DIR=/data
+      - DATABASE_URL=sqlite:////data/app.db
+      - TASK_BACKEND=${TASK_BACKEND:-inline}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - LLM_PROVIDER=${LLM_PROVIDER:-mock}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - ASR_PROVIDER=${ASR_PROVIDER:-none}
+      - OCR_PROVIDER=${OCR_PROVIDER:-none}
+      - API_KEYS=${API_KEYS:-}
+    volumes:
+      - app-data:/data
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["saas"]
+    volumes:
+      - redis-data:/data
+
+  worker:
+    build: .
+    profiles: ["saas"]
+    command: celery -A app.tasks.celery_app worker -l info -c 2
+    environment:
+      - DATA_DIR=/data
+      - DATABASE_URL=sqlite:////data/app.db
+      - TASK_BACKEND=celery
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - LLM_PROVIDER=${LLM_PROVIDER:-mock}
+      - ASR_PROVIDER=${ASR_PROVIDER:-none}
+      - OCR_PROVIDER=${OCR_PROVIDER:-none}
+    volumes:
+      - app-data:/data
+    depends_on:
+      - redis
+
+volumes:
+  app-data:
+  redis-data:
