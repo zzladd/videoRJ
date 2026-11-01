@@ -17,6 +17,22 @@ python3 -m pip install -r requirements.txt
 
 在仓库根目录运行。程序会从当前目录或源码位置找到 `config/paper.json`。
 
+Windows 本机示例目录：`D:\code\lh\videoRJ`。先进入该目录再执行：
+
+```powershell
+cd D:\code\lh\videoRJ
+$env:PYTHONPATH = "src"
+python -m pip install -r requirements.txt
+python -m paper_spot check
+python -m paper_spot run --seconds 120
+python -m paper_spot report runs/<目录>
+python -m paper_spot replay runs/<目录>
+python -m paper_spot serve
+python -m paper_spot view runs/<目录>
+```
+
+Linux / macOS：
+
 ```bash
 PYTHONPATH=src python3 -m paper_spot check
 PYTHONPATH=src python3 -m paper_spot run --seconds 120
