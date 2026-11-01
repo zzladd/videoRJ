@@ -298,6 +298,16 @@ def write_fill_book(frame: pd.DataFrame, directory: Path) -> None:
     pq.write_table(table, directory / "fill_book.parquet")
 
 
+def _replay_reason(replay_diff: int | None, live_diff: int | None) -> str:
+    if replay_diff == 0 and live_diff == 0:
+        return "同一段行情重放两次，价和量一致，并且和该次会话的影子账本一致。"
+    if replay_diff == 0 and live_diff is None:
+        return "同一段行情重放两次，价和量一致。这次没有影子账本可对照。"
+    if replay_diff == 0:
+        return "同一段行情重放两次价量一致，但和该次会话影子账本还有差异。"
+    return "同一段行情重放两次，价和量应一致，并且和该次会话的影子账本一致。"
+
+
 def acceptance(
     *,
     quality: dict[str, Any],
@@ -324,7 +334,7 @@ def acceptance(
         "disconnect_does_not_fill_old_orders": {
             "met": False,
             "mechanism_tested": True,
-            "reason": "过期行情和记录下来的断线窗口不会进入沙箱撮合。人为断线再连上还要用一整段行情会话验收。",
+            "reason": "断线前的旧单不会用断线窗口里补出来的价格成交，过期行情也不进撮合。这一条有回归测试。还没有在一段真实行情里拔线。",
         },
         "report_header": {
             "met": True,
@@ -334,10 +344,7 @@ def acceptance(
             "met": replay_diff == 0 and live_diff in (None, 0),
             "replay_diff": replay_diff,
             "live_vs_replay_diff": live_diff,
-            "reason": (
-                "同一段行情重放两次，价和量应一致，并且和影子账本一致。"
-                "两次重放一致只说明撮合是确定的。和账本还有差异，或还没有 24 小时记录时，这一条不算验收通过。"
-            ),
+            "reason": _replay_reason(replay_diff, live_diff),
         },
         "participation_fee_arrival": {
             "met": bool(has_numbers),

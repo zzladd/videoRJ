@@ -25,10 +25,13 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.config import LoggingConfig
 from nautilus_trader.model.currencies import BTC
 from nautilus_trader.model.currencies import USDT
+from nautilus_trader.model.data import OrderBookDelta
+from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.enums import RecordFlag
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Money
 from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
@@ -55,6 +58,8 @@ from paper_spot.node_builder import build_node
 from paper_spot.replay import diff_count
 from paper_spot.replay import fill_keys
 from paper_spot.replay import replay_diff
+from paper_spot.replay import run_backtest
+from paper_spot.session import load_tape
 from paper_spot.reports import acceptance
 from paper_spot.reports import data_quality
 from paper_spot.reports import quote_frame
@@ -86,6 +91,46 @@ def _config(**overrides) -> ConnectivityConfig:
     }
     values.update(overrides)
     return ConnectivityConfig(**values)
+
+
+def _quote(instrument, bid_size, ask_size, ts, bid_price=100.00, ask_price=100.01):
+    return TestDataStubs.quote_tick(
+        instrument=instrument,
+        bid_price=bid_price,
+        ask_price=ask_price,
+        bid_size=bid_size,
+        ask_size=ask_size,
+        ts_event=ts,
+        ts_init=ts,
+    )
+
+
+def _book(instrument, bid_price, ask_price, bid_size, ask_size, ts_event, ts_init, last=False):
+    snapshot = TestDataStubs.order_book_snapshot(
+        instrument=instrument,
+        bid_price=bid_price,
+        ask_price=ask_price,
+        bid_size=bid_size,
+        ask_size=ask_size,
+        bid_levels=1,
+        ask_levels=1,
+    )
+    deltas = []
+    raw = snapshot.deltas
+    for index, delta in enumerate(raw):
+        flags = int(RecordFlag.F_LAST) if last and index == len(raw) - 1 else 0
+        deltas.append(
+            OrderBookDelta(
+                instrument_id=delta.instrument_id,
+                action=delta.action,
+                order=delta.order,
+                flags=flags,
+                sequence=delta.sequence,
+                ts_event=ts_event,
+                ts_init=ts_init,
+            )
+        )
+    return OrderBookDeltas(instrument_id=snapshot.instrument_id, deltas=deltas)
 
 
 def _run(instrument, data, config, balances=None):
@@ -281,6 +326,87 @@ class Phase1Tests(unittest.TestCase):
         self.assertTrue(gate.blocks(15, 15))
         self.assertFalse(gate.blocks(21, 21))
 
+    def test_reconnect_does_not_fill_old_order_at_backfilled_price(self) -> None:
+        instrument = TestInstrumentProvider.btcusdt_binance()
+        gap_start = 50_000_000
+        gap_end = 300_000_000
+        before = _book(instrument, 100.00, 200.00, 5, 1, 0, 0)
+        decision = _quote(instrument, bid_size=5, ask_size=1, ts=1_000_000)
+        backfill = _book(
+            instrument,
+            100.00,
+            100.01,
+            5,
+            1,
+            ts_event=80_000_000,
+            ts_init=350_000_000,
+            last=True,
+        )
+        after = _book(instrument, 100.00, 200.00, 5, 1, 360_000_000, 360_000_000, last=True)
+        config = _config()
+        stale_delay = backfill.ts_init - backfill.ts_event
+        self.assertLess(stale_delay, 2_000_000_000)
+        self.assertTrue(gap_start < backfill.ts_event < gap_end)
+        filled = run_backtest(instrument, [before, decision, backfill, after], config)
+        self.assertEqual(filled, [("BUY", filled[0][1], "100.01")])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            catalog = ParquetDataCatalog(str(run_dir / "catalog"))
+            catalog.write_data(
+                [before, decision, backfill, after, instrument],
+                skip_disjoint_check=True,
+            )
+            (run_dir / "gaps.json").write_text(
+                json.dumps({"gaps": [[gap_start, gap_end]], "stale_ns": 2_000_000_000}),
+                encoding="utf-8",
+            )
+            visible = load_tape(run_dir)["visible"]
+            self.assertFalse(any(item.ts_event == backfill.ts_event for item in visible))
+            clean = run_backtest(instrument, visible, config)
+        self.assertEqual(clean, [])
+
+        gate = GapGate(stale_ns=2_000_000_000)
+        gate.add_gap(gap_start, gap_end)
+        runtime.CURRENT = Session(
+            fee_maker=Decimal("0.001"),
+            fee_taker=Decimal("0.001"),
+            fee_version="binance-spot-regular-2026-11-01",
+            gate=gate,
+            instrument_id=str(instrument.id),
+        )
+        loop = asyncio.new_event_loop()
+        try:
+            clock = LiveClock()
+            msgbus = MessageBus(trader_id=TraderId("PAPER-001"), clock=clock)
+            cache = Cache()
+            cache.add_instrument(instrument)
+            portfolio = Portfolio(msgbus, cache, clock)
+            client = PaperSandboxExecutionClient(
+                loop=loop,
+                portfolio=portfolio,
+                msgbus=msgbus,
+                cache=cache,
+                clock=clock,
+                config=SandboxExecutionClientConfig(
+                    venue="BINANCE",
+                    starting_balances=["10000 USDT"],
+                    account_type="CASH",
+                    oms_type="NETTING",
+                    book_type="L2_MBP",
+                    trade_execution=True,
+                    bar_execution=False,
+                ),
+            )
+            client.connect()
+            client.on_data(before)
+            self.assertEqual(str(client.exchange.best_ask_price(instrument.id)), "200.00")
+            client.on_data(backfill)
+            self.assertEqual(str(client.exchange.best_ask_price(instrument.id)), "200.00")
+            self.assertGreater(gate.dropped, 0)
+        finally:
+            loop.close()
+
     def test_hash_is_stable(self) -> None:
         payload = {"b": 1, "a": "通路测试"}
         self.assertEqual(canonical_hash(payload), canonical_hash({"a": "通路测试", "b": 1}))
@@ -434,6 +560,40 @@ class Phase1Tests(unittest.TestCase):
         self.assertEqual(replay_diff(instrument, data, _config()), 0)
         self.assertEqual(diff_count([("BUY", "1", "2")], [("BUY", "1", "2")]), 0)
         self.assertEqual(diff_count([("BUY", "1", "2")], [("BUY", "1", "3")]), 1)
+
+    def test_replay_matches_session_when_snapshot_has_no_last_flag(self) -> None:
+        instrument = TestInstrumentProvider.btcusdt_binance()
+        early = _book(instrument, 100.00, 100.01, 5, 1, 0, 0, last=False)
+        late = _book(instrument, 100.00, 100.01, 1, 5, 200_000_000, 200_000_000, last=True)
+        quotes = [
+            _quote(instrument, 5, 1, 5_000_000),
+            _quote(instrument, 5, 1, 150_000_000),
+            _quote(instrument, 1, 5, 5_200_000_000),
+            _quote(instrument, 1, 5, 5_350_000_000),
+        ]
+        config = _config()
+        session_fills = run_backtest(instrument, [early, late, *quotes], config)
+        self.assertEqual([item[0] for item in session_fills], ["BUY", "SELL"])
+        self.assertEqual(session_fills[0][2], "100.01")
+        self.assertEqual(session_fills[1][2], "100.00")
+
+        raw = [*early.deltas, *late.deltas]
+        merged = OrderBookDeltas.batch(raw)
+        self.assertEqual(merged[0].ts_init, late.ts_init)
+        naive = run_backtest(instrument, [*merged, *quotes], config)
+        self.assertNotEqual(diff_count(session_fills, naive), 0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            catalog = ParquetDataCatalog(str(run_dir / "catalog"))
+            catalog.write_data([early, late, *quotes, instrument], skip_disjoint_check=True)
+            tape = load_tape(run_dir)
+            self.assertEqual(tape["books"][0].ts_init, early.ts_init)
+            self.assertEqual(len(tape["books"]), 2)
+            first = run_backtest(instrument, tape["visible"], config)
+            second = run_backtest(instrument, tape["visible"], config)
+        self.assertEqual(diff_count(first, second), 0)
+        self.assertEqual(diff_count(session_fills, first), 0)
 
     def test_catalog_round_trip_and_report_header_fields(self) -> None:
         instrument = TestInstrumentProvider.btcusdt_binance()

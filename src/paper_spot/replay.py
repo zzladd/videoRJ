@@ -10,9 +10,12 @@ from nautilus_trader.backtest.models import FillModel
 from nautilus_trader.backtest.models import MakerTakerFeeModel
 from nautilus_trader.common.config import LoggingConfig
 from nautilus_trader.core.data import Data
+from nautilus_trader.model.data import OrderBookDelta
+from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.enums import RecordFlag
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.objects import Money
@@ -39,6 +42,35 @@ def _add_data(engine: BacktestEngine, data: list[Data]) -> None:
     for kind in sorted(grouped, key=rank):
         batch = sorted(grouped[kind], key=lambda item: item.ts_init)
         engine.add_data(batch)
+
+
+def restore_book_batches(deltas: list[OrderBookDelta]) -> list[OrderBookDeltas]:
+    """把 Parquet 里的逐条档位还原成当时送进撮合的订单簿包。
+
+    目录按单条 OrderBookDelta 落盘。币安 REST 初始快照的最后一档没有 F_LAST，
+    OrderBookDeltas.batch() 会把它和下一包粘在一起，整包的 ts_init 变成下一包
+    的到达时间。第一笔 IOC 的 100 毫秒延迟到期时盘口还是空的，订单被取消，
+    后面的名额被替补单占掉，会话里的最后一笔卖出就对不上。
+    同一接收时间的档位仍是一包；遇到 F_LAST 也收包。
+    """
+    if not deltas:
+        return []
+    ordered = sorted(deltas, key=lambda delta: delta.ts_init)
+    groups: list[list[OrderBookDelta]] = []
+    current: list[OrderBookDelta] = []
+    for delta in ordered:
+        if current and (
+            delta.ts_init != current[-1].ts_init or delta.instrument_id != current[-1].instrument_id
+        ):
+            groups.append(current)
+            current = []
+        current.append(delta)
+        if delta.flags & RecordFlag.F_LAST:
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    return [OrderBookDeltas(instrument_id=group[0].instrument_id, deltas=group) for group in groups]
 
 
 def _data_sort_key(item: Data) -> tuple[int, int]:

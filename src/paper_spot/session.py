@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import nautilus_trader
-from nautilus_trader.model.data import OrderBookDeltas
+from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.identifiers import InstrumentId
@@ -28,6 +28,7 @@ from paper_spot.ledger import ShadowLedger
 from paper_spot.node_builder import build_node
 from paper_spot.replay import _data_sort_key
 from paper_spot.replay import diff_count
+from paper_spot.replay import restore_book_batches
 from paper_spot.replay import run_backtest
 from paper_spot.reports import acceptance
 from paper_spot.reports import build_fill_book
@@ -319,7 +320,7 @@ def load_tape(run_dir: Path) -> dict[str, Any]:
         gate.stale_ns = int(saved.get("stale_ns", gate.stale_ns))
     quotes = _query(catalog, QuoteTick)
     trades = _query(catalog, TradeTick)
-    books = _query(catalog, OrderBookDeltas)
+    books = restore_book_batches(_query(catalog, OrderBookDelta))
     instruments = _query(catalog, CurrencyPair)
     visible = [
         item
