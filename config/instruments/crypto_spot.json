@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "instruments": [
+    {
+      "instrument_id": "BTCUSDT.BINANCE",
+      "product": "spot",
+      "price_increment": "0.01",
+      "size_increment": "0.00001",
+      "min_quantity": "0.00001",
+      "min_notional": "5",
+      "min_notional_currency": "USDT",
+      "source": "https://data-api.binance.vision/api/v3/exchangeInfo?symbol=BTCUSDT",
+      "checked_on": "2026-11-01",
+      "data_grade": "l2_tape"
+    }
+  ],
+  "runtime_note": "下单精度以当次官方 instrument 响应为准。这份文件只保存已核对的现货规格，不包含行情，也不填国内品种。"
+}

@@ -1,0 +1,13 @@
+{
+  "fee_version": "okx-spot-regular-2026-11-01",
+  "venue": "OKX",
+  "product": "spot",
+  "account_tier": "Regular",
+  "maker_rate": "0.0008",
+  "taker_rate": "0.001",
+  "maker_rate_display": "0.0800%",
+  "taker_rate_display": "0.1000%",
+  "retrieved_on": "2026-11-01",
+  "source": "https://www.okx.com/en-us/help/important-notice-consolidation-token-pairs",
+  "source_note": "OKX 公告中的现货费率表，2026-08-14 15:00–17:00（UTC+8）起生效。Regular 档挂单方 0.0800%、吃单方 0.1000%。BTC-USDT 按该表的主流现货档理解。本进程没有账户，不用 VIP 或返佣。"
+}
