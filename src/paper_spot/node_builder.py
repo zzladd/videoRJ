@@ -109,6 +109,7 @@ def build_node(
     starting_balances: list[str],
     session_seconds: int,
     imbalance: str,
+    strategy: str = "connectivity",
     log_level: str = "INFO",
 ) -> TradingNode:
     if runtime.CURRENT is None:
@@ -139,6 +140,7 @@ def build_node(
         "ledger_path": str((run_dir / "ledger.json").resolve()),
         "starting_balance": str(paper["starting_balance"]),
         "latency_ns": 100_000_000,
+        "strategy": strategy,
     }
     recorder_config = {
         "instrument_id": choice.instrument_id,

@@ -1,4 +1,7 @@
-"""连通性策略。名义金额远小于盘口，只用来产生影子成交样本。"""
+"""把已到达的行情交给可替换的 decide，再按配置上限发 IOC。
+
+买卖方向在 strategies 里。这个文件负责名义金额上限、保护带、冷却和影子账本。
+"""
 
 from __future__ import annotations
 
@@ -19,6 +22,9 @@ from nautilus_trader.trading.strategy import Strategy
 
 from paper_spot.constants import LATENCY_NS
 from paper_spot.ledger import ShadowLedger
+from paper_spot.strategies.api import MarketView
+from paper_spot.strategies.api import OrderIntent
+from paper_spot.strategies.loader import load_decide
 
 
 class ConnectivityConfig(StrategyConfig, frozen=True):
@@ -39,6 +45,7 @@ class ConnectivityConfig(StrategyConfig, frozen=True):
     ledger_path: str = ""
     starting_balance: str = "10000 USDT"
     latency_ns: int = LATENCY_NS
+    strategy: str = "connectivity"
 
 
 class ConnectivityStrategy(Strategy):
@@ -50,6 +57,7 @@ class ConnectivityStrategy(Strategy):
         self._last_decision_ns: int | None = None
         self._orders_sent = 0
         self._ready = False
+        self._decide = None
         self.ledger: ShadowLedger | None = None
 
     def on_start(self) -> None:
@@ -57,6 +65,11 @@ class ConnectivityStrategy(Strategy):
         taker = Decimal(self.config.taker_fee)
         if maker <= 0 or taker <= 0:
             self.log.error("费率配置缺失，不开新仓")
+            return
+        try:
+            self._decide = load_decide(self.config.strategy, Decimal(self.config.imbalance_multiple))
+        except Exception as exc:
+            self.log.error(f"策略没有载入，不开新仓：{exc}")
             return
         if self.config.ledger_path:
             self.ledger = ShadowLedger(
@@ -86,6 +99,7 @@ class ConnectivityStrategy(Strategy):
             "通路测试启动 "
             f"instrument={self.instrument_id} "
             f"notional={self.config.order_quote_notional} "
+            f"strategy={self.config.strategy} "
             f"imbalance={self.config.imbalance_multiple} "
             f"fee={self.config.fee_version}"
         )
@@ -113,18 +127,29 @@ class ConnectivityStrategy(Strategy):
         ):
             return
 
-        bid_size = tick.bid_size.as_decimal()
-        ask_size = tick.ask_size.as_decimal()
-        if bid_size <= 0 or ask_size <= 0:
+        if self._decide is None:
             return
-        if tick.bid_price >= tick.ask_price:
+        market = MarketView(
+            instrument_id=str(tick.instrument_id),
+            ts_event=int(tick.ts_event),
+            ts_init=int(tick.ts_init),
+            bid=tick.bid_price.as_decimal(),
+            ask=tick.ask_price.as_decimal(),
+            bid_size=tick.bid_size.as_decimal(),
+            ask_size=tick.ask_size.as_decimal(),
+            base_qty=self._base_qty(),
+        )
+        try:
+            intent = self._decide(market)
+        except Exception as exc:
+            self.log.error(f"策略函数失败，这口行情不下单：{type(exc).__name__}: {exc}")
             return
-        multiple = Decimal(self.config.imbalance_multiple)
-        net = self._base_qty()
-        if bid_size >= multiple * ask_size and net <= 0:
-            self._send(OrderSide.BUY, tick)
-        elif ask_size >= multiple * bid_size and net > 0:
-            self._send(OrderSide.SELL, tick)
+        if intent is None:
+            return
+        if not isinstance(intent, OrderIntent) or intent.side not in {"BUY", "SELL"}:
+            self.log.error("策略要返回 OrderIntent(side='BUY' 或 'SELL')，或返回 None")
+            return
+        self._send(OrderSide.BUY if intent.side == "BUY" else OrderSide.SELL, tick, intent)
 
     def _base_qty(self) -> Decimal:
         instrument = self.cache.instrument(self.instrument_id)
@@ -138,7 +163,7 @@ class ConnectivityStrategy(Strategy):
             return Decimal(0)
         return balance.as_decimal()
 
-    def _send(self, side: OrderSide, tick) -> None:
+    def _send(self, side: OrderSide, tick, intent: OrderIntent) -> None:
         instrument = self.cache.instrument(self.instrument_id)
         if instrument is None:
             self.log.warning("品种还没有进入缓存，跳过")
@@ -149,11 +174,11 @@ class ConnectivityStrategy(Strategy):
         if side == OrderSide.BUY:
             raw_limit = mid * (Decimal(1) + band)
             steps = (raw_limit / increment).to_integral_value(rounding=ROUND_DOWN)
-            quantity = self._buy_qty(instrument, tick.ask_price.as_decimal())
+            quantity = self._buy_qty(instrument, tick.ask_price.as_decimal(), intent.quote_notional)
         else:
             raw_limit = mid * (Decimal(1) - band)
             steps = (raw_limit / increment).to_integral_value(rounding=ROUND_UP)
-            quantity = self._sell_qty(instrument)
+            quantity = self._sell_qty(instrument, tick.bid_price.as_decimal(), intent.quote_notional)
         if quantity is None or steps <= 0:
             return
         limit = instrument.make_price(str(steps * increment))
@@ -180,6 +205,7 @@ class ConnectivityStrategy(Strategy):
                 f"bid={tick.bid_price}",
                 f"ask={tick.ask_price}",
                 "title=通路测试",
+                f"strategy={self.config.strategy}",
             ],
         )
         self._orders_sent += 1
@@ -202,11 +228,11 @@ class ConnectivityStrategy(Strategy):
         self.log.info(f"通路测试提交 {side.name} {quantity} @ {limit} IOC")
         self.submit_order(order)
 
-    def _buy_qty(self, instrument, ask: Decimal) -> Quantity | None:
-        notional = Decimal(self.config.order_quote_notional)
+    def _buy_qty(self, instrument, ask: Decimal, requested: Decimal | None) -> Quantity | None:
         ceiling = Decimal(self.config.max_notional)
+        notional = Decimal(self.config.order_quote_notional) if requested is None else Decimal(requested)
         if notional <= 0 or notional > ceiling:
-            self.log.error("下单名义金额超出配置上限，拒绝")
+            self.log.error(f"下单名义金额 {notional} 超出配置上限 {ceiling}，拒绝")
             return None
         raw = notional / ask
         quantity = instrument.make_qty(str(raw))
@@ -223,11 +249,27 @@ class ConnectivityStrategy(Strategy):
             return None
         return quantity
 
-    def _sell_qty(self, instrument) -> Quantity | None:
+    def _sell_qty(self, instrument, bid: Decimal, requested: Decimal | None) -> Quantity | None:
         available = self._base_qty()
         if available <= 0:
             return None
-        return instrument.make_qty(str(available))
+        ceiling = Decimal(self.config.max_notional)
+        limit_notional = ceiling
+        if requested is not None:
+            asked = Decimal(requested)
+            if asked <= 0:
+                self.log.error(f"卖出名义金额 {asked} 不是正数，拒绝")
+                return None
+            limit_notional = min(asked, ceiling)
+        quantity = instrument.make_qty(str(available))
+        if bid > 0 and quantity.as_decimal() * bid > limit_notional:
+            capped = instrument.make_qty(str(limit_notional / bid))
+            if capped.as_decimal() <= 0:
+                self.log.error("卖出名义金额超过上限，而且上限不够一手，拒绝")
+                return None
+            self.log.info(f"卖出名义金额超过上限 {limit_notional}，只卖到上限")
+            return capped
+        return quantity
 
     def on_order_filled(self, event: OrderFilled) -> None:
         if self.ledger is None:

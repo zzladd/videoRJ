@@ -42,6 +42,8 @@ from paper_spot.reports import write_fill_book
 from paper_spot.reports import write_quantstats
 from paper_spot import runtime
 from paper_spot.runtime import Session
+from paper_spot.strategies.loader import load_decide
+from paper_spot.strategies.loader import normalize_strategy
 from paper_spot.strategy import ConnectivityConfig
 from paper_spot.venue_probe import VenueChoice
 from paper_spot.venue_probe import fetch_binance_filters
@@ -109,6 +111,7 @@ def prepare_run(
     resume: bool,
     seconds: int | None,
     imbalance: str | None,
+    strategy: str | None = None,
 ) -> dict[str, Any]:
     paper = load_phase1(root)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -127,10 +130,19 @@ def prepare_run(
         if imbalance is not None and str(imbalance) != saved_imbalance:
             raise ConfigError("恢复时不能改不平衡倍数")
         imbalance = saved_imbalance
+        saved_strategy = str(saved.get("strategy") or "connectivity")
+        requested = normalize_strategy(strategy)
+        if requested != saved_strategy:
+            raise ConfigError("恢复时不能改策略")
+        strategy_name = saved_strategy
         probe_details = saved.get("probe") or {}
     else:
-        choice, probe_details = probe_venues()
         imbalance = str(imbalance if imbalance is not None else paper["imbalance_multiple"])
+        strategy_name = normalize_strategy(strategy)
+        load_decide(strategy_name, Decimal(imbalance))
+        choice, probe_details = probe_venues()
+    if resume:
+        load_decide(strategy_name, Decimal(imbalance))
     fee = load_fee(root, choice.venue)
     payload = matching_payload(paper, fee, choice, imbalance)
     config_hash = canonical_hash(payload)
@@ -149,6 +161,8 @@ def prepare_run(
                 "venue": choice.as_dict(),
                 "probe": probe_details,
                 "nautilus": nautilus_trader.__version__,
+                "strategy": strategy_name,
+                "participation_warn": str(paper.get("participation_warn") or ""),
             },
         )
     session_seconds = int(paper["session_seconds"] if seconds is None else seconds)
@@ -187,6 +201,7 @@ def prepare_run(
         "probe": probe_details,
         "hash": config_hash,
         "imbalance": imbalance,
+        "strategy": strategy_name,
         "seconds": session_seconds,
         "balances": balances,
         "filter_note": note,
@@ -242,12 +257,27 @@ def startup_lines(prepared: dict[str, Any]) -> list[str]:
         "延迟 LatencyModel 100 毫秒（1.231 里还没有 StaticLatencyModel 这个类名），消息队列打开。",
         f"配置哈希 {prepared['hash']}",
         prepared["filter_note"],
-        f"不平衡倍数 {prepared['imbalance']}，会话 {prepared['seconds']} 秒。",
+        f"策略 {prepared['strategy']}，不平衡倍数 {prepared['imbalance']}，会话 {prepared['seconds']} 秒。",
     ]
 
 
-def run_session(root: Path, run_dir: Path, *, resume: bool, seconds: int | None, imbalance: str | None) -> Path:
-    prepared = prepare_run(root, run_dir, resume=resume, seconds=seconds, imbalance=imbalance)
+def run_session(
+    root: Path,
+    run_dir: Path,
+    *,
+    resume: bool,
+    seconds: int | None,
+    imbalance: str | None,
+    strategy: str | None = None,
+) -> Path:
+    prepared = prepare_run(
+        root,
+        run_dir,
+        resume=resume,
+        seconds=seconds,
+        imbalance=imbalance,
+        strategy=strategy,
+    )
     for line in startup_lines(prepared):
         print(line)
     node = build_node(
@@ -258,6 +288,7 @@ def run_session(root: Path, run_dir: Path, *, resume: bool, seconds: int | None,
         starting_balances=prepared["balances"],
         session_seconds=prepared["seconds"],
         imbalance=prepared["imbalance"],
+        strategy=prepared["strategy"],
     )
     try:
         print("执行客户端：" + ", ".join(type(client).__name__ for client in node.kernel.exec_engine._clients.values()))
@@ -271,8 +302,8 @@ def run_session(root: Path, run_dir: Path, *, resume: bool, seconds: int | None,
     return run_dir
 
 
-def check_session(root: Path, run_dir: Path) -> None:
-    prepared = prepare_run(root, run_dir, resume=False, seconds=0, imbalance=None)
+def check_session(root: Path, run_dir: Path, strategy: str | None = None) -> None:
+    prepared = prepare_run(root, run_dir, resume=False, seconds=0, imbalance=None, strategy=strategy)
     for line in startup_lines(prepared):
         print(line)
     node = build_node(
@@ -283,6 +314,7 @@ def check_session(root: Path, run_dir: Path) -> None:
         starting_balances=prepared["balances"],
         session_seconds=0,
         imbalance=prepared["imbalance"],
+        strategy=prepared["strategy"],
     )
     try:
         names = [type(client).__name__ for client in node.kernel.exec_engine._clients.values()]
@@ -437,6 +469,7 @@ def _replay_config(snapshot: dict[str, Any], run_dir: Path) -> ConnectivityConfi
         ledger_path="",
         starting_balance=matching["starting_balance"],
         latency_ns=int(matching["latency_ns"]),
+        strategy=str(snapshot.get("strategy") or "connectivity"),
     )
 
 

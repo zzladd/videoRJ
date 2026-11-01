@@ -1,4 +1,4 @@
-"""命令行：自检、跑一次影子盘、重写报告、重放。"""
+"""命令行：自检、跑一次影子盘、重写报告、重放、本机查看。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from paper_spot.session import check_session
 from paper_spot.session import replay_session
 from paper_spot.session import run_session
 from paper_spot.session import write_outputs
+from paper_spot.view import serve_run
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,12 +22,14 @@ def main(argv: list[str] | None = None) -> int:
 
     check = sub.add_parser("check", help="探测官方行情并建节点，不发单")
     check.add_argument("--run-dir", type=Path, default=None)
+    check.add_argument("--strategy", default=None, help="connectivity、user，或含 decide 的 .py 文件")
 
     run = sub.add_parser("run", help="跑一次通路测试")
     run.add_argument("--seconds", type=int, default=None)
     run.add_argument("--run-dir", type=Path, default=None)
     run.add_argument("--resume", action="store_true")
     run.add_argument("--imbalance", default=None)
+    run.add_argument("--strategy", default=None, help="connectivity、user，或含 decide 的 .py 文件")
 
     report = sub.add_parser("report", help="根据已落盘的行情和账本重写报告")
     report.add_argument("run_dir", type=Path)
@@ -34,15 +37,19 @@ def main(argv: list[str] | None = None) -> int:
     replay = sub.add_parser("replay", help="用同一套撮合把行情重放两遍")
     replay.add_argument("run_dir", type=Path)
 
+    view = sub.add_parser("view", help="在 127.0.0.1 打开一次运行目录")
+    view.add_argument("run_dir", type=Path)
+    view.add_argument("--port", type=int, default=8765)
+
     args = parser.parse_args(argv)
     try:
         root = repo_root()
         if args.command == "check":
             if args.run_dir is None:
                 with tempfile.TemporaryDirectory(prefix="paper-spot-check-") as temporary:
-                    check_session(root, Path(temporary))
+                    check_session(root, Path(temporary), strategy=args.strategy)
             else:
-                check_session(root, args.run_dir)
+                check_session(root, args.run_dir, strategy=args.strategy)
         elif args.command == "run":
             run_dir = args.run_dir or _new_run_dir(root)
             run_session(
@@ -51,11 +58,14 @@ def main(argv: list[str] | None = None) -> int:
                 resume=args.resume,
                 seconds=args.seconds,
                 imbalance=args.imbalance,
+                strategy=args.strategy,
             )
         elif args.command == "report":
             write_outputs(args.run_dir, replay=False)
         elif args.command == "replay":
             replay_session(args.run_dir)
+        elif args.command == "view":
+            serve_run(args.run_dir, args.port)
     except (ConfigError, ShadowGuardError, ValueError) as exc:
         print(f"拒绝启动：{exc}")
         return 2

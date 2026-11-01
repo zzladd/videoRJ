@@ -22,6 +22,7 @@ PYTHONPATH=src python3 -m paper_spot check
 PYTHONPATH=src python3 -m paper_spot run --seconds 120
 PYTHONPATH=src python3 -m paper_spot report runs/<目录>
 PYTHONPATH=src python3 -m paper_spot replay runs/<目录>
+PYTHONPATH=src python3 -m paper_spot view runs/<目录>
 ```
 
 连续覆盖加密市场 24 小时时，把秒数设成 86400。进程中断后用同一个目录恢复，现金不会被重置成 10000：
@@ -57,7 +58,44 @@ PYTHONPATH=src python3 -m paper_spot run --seconds 86400 --run-dir runs/<目录>
 | `session_seconds` | 120 | 到点停止。可用 `--seconds` 覆盖 |
 | `gap_threshold_seconds` | 2 | 行情到达比交易所时间晚过这个值，不拿去撮合 |
 
-命令行可以覆盖会话时长和不平衡倍数。`--imbalance` 会写进该次配置哈希。恢复时不能改这个倍数。
+命令行可以覆盖会话时长和不平衡倍数。`--imbalance` 会写进该次配置哈希。恢复时不能改这个倍数，也不能改策略。
+
+## 策略
+
+默认 `paper_spot run` 使用连通性策略：买一量至少是卖一量的 `imbalance_multiple` 倍就买一小笔，反向就卖掉持仓。买卖写在 `src/paper_spot/strategies/connectivity.py` 的 `connectivity_decide`。
+
+要换成自己的买卖，改这一个文件：
+
+`src/paper_spot/strategies/user_strategy.py`
+
+函数签名：
+
+```python
+def decide(market: MarketView) -> OrderIntent | None:
+    ...
+```
+
+`market` 是已经到达的一笔最优买卖价，字段是 `instrument_id`、`ts_event`、`ts_init`、`bid`、`ask`、`bid_size`、`ask_size`、`base_qty`。返回 `OrderIntent(side="BUY", quote_notional=Decimal("12"))` 或 `OrderIntent(side="SELL")` 表示要下单，返回 `None` 表示这口行情不下单。`quote_notional` 省略时用配置里的 `order_quote_notional`。
+
+名义金额仍受 `max_notional_per_order` 约束。买单超过上限会被拒绝。卖单超过上限时只卖到上限。冷却时间和最多下单笔数仍由 `config/paper.json` 管。这个文件不要读交易密钥，也不要连接交易所。
+
+用自己的策略跑：
+
+```bash
+PYTHONPATH=src python3 -m paper_spot run --strategy user --seconds 120
+```
+
+`--strategy` 也可以是另一个含 `decide(market)` 的 `.py` 文件。不写 `--strategy` 时仍是连通性策略。恢复同一目录时要带上同一次的 `--strategy`。
+
+## 本机查看
+
+```bash
+PYTHONPATH=src python3 -m paper_spot view runs/<目录>
+```
+
+页面只绑定 `127.0.0.1`，地址会打印出来。默认端口 8765，可以用 `--port` 换。它只读这个目录里的账本和报告，不拉外部行情。
+
+## 费率
 
 费率不写在策略里，而在 `config/fees/`：
 

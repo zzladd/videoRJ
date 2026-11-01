@@ -67,7 +67,14 @@ from paper_spot.reports import write_daily_summary
 from paper_spot.reports import write_quantstats
 from paper_spot.runtime import Session
 from paper_spot.sandbox_client import PaperSandboxExecutionClient
+from paper_spot.strategies.api import MarketView
+from paper_spot.strategies.api import OrderIntent
+from paper_spot.strategies.connectivity import connectivity_decide
+from paper_spot.strategies.user_strategy import decide as user_decide
 from paper_spot.strategy import ConnectivityConfig
+from paper_spot.view import bind_server
+from paper_spot.view import realized_curve
+from paper_spot.view import render_page
 from paper_spot.venue_probe import ProbeStatus
 from paper_spot.venue_probe import choose_venue
 
@@ -702,6 +709,162 @@ class Phase1Tests(unittest.TestCase):
                 self.assertFalse(node.kernel._config.exec_engine.reconciliation)
             finally:
                 node.dispose()
+
+
+    def test_user_strategy_file_is_the_replaceable_entry(self) -> None:
+        market = MarketView(
+            instrument_id="BTCUSDT.BINANCE",
+            ts_event=1,
+            ts_init=1,
+            bid=Decimal("100"),
+            ask=Decimal("100.01"),
+            bid_size=Decimal("5"),
+            ask_size=Decimal("1"),
+            base_qty=Decimal("0"),
+        )
+        self.assertEqual(user_decide(market), connectivity_decide(market, Decimal("1.2")))
+        self.assertEqual(user_decide(market), OrderIntent(side="BUY"))
+
+    def test_notional_above_cap_is_rejected(self) -> None:
+        instrument = TestInstrumentProvider.btcusdt_binance()
+        book = TestDataStubs.order_book_snapshot(
+            instrument=instrument,
+            bid_price=100.00,
+            ask_price=100.01,
+            bid_size=5,
+            ask_size=1,
+            bid_levels=1,
+            ask_levels=1,
+        )
+        quote = TestDataStubs.quote_tick(
+            instrument=instrument,
+            bid_price=100.00,
+            ask_price=100.01,
+            bid_size=5,
+            ask_size=1,
+        )
+        released = TestDataStubs.quote_tick(
+            instrument=instrument,
+            bid_price=100.00,
+            ask_price=100.01,
+            bid_size=5,
+            ask_size=1,
+            ts_event=150_000_000,
+            ts_init=150_000_000,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mine.py"
+            path.write_text(
+                "from decimal import Decimal\n"
+                "from paper_spot.strategies.api import OrderIntent\n"
+                "def decide(market):\n"
+                "    if market.base_qty > 0:\n"
+                "        return None\n"
+                "    return OrderIntent(side='BUY', quote_notional=Decimal('80'))\n",
+                encoding="utf-8",
+            )
+            refused = _run(instrument, [book, quote, released], _config(strategy=str(path)))
+            path.write_text(
+                "from decimal import Decimal\n"
+                "from paper_spot.strategies.api import OrderIntent\n"
+                "def decide(market):\n"
+                "    if market.base_qty > 0:\n"
+                "        return None\n"
+                "    return OrderIntent(side='BUY', quote_notional=Decimal('12'))\n",
+                encoding="utf-8",
+            )
+            allowed = _run(instrument, [book, quote, released], _config(strategy=str(path)))
+        self.assertEqual(refused["fills"], [])
+        self.assertEqual(len(allowed["fills"]), 1)
+        self.assertEqual(allowed["fills"][0][0], "BUY")
+
+    def test_realized_pnl_settles_when_flat(self) -> None:
+        fills = [
+            {"side": "BUY", "quantity": "1", "price": "100", "commission": "0.1 USDT", "ts_init": 1},
+            {"side": "SELL", "quantity": "1", "price": "110", "commission": "0.1 USDT", "ts_init": 2},
+        ]
+        points = realized_curve(fills)
+        self.assertEqual(points[-1][1], Decimal("9.8"))
+
+    def test_view_page_shows_fills_and_empty_state_on_localhost(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            self._write_view_run(run_dir, fills=False)
+            empty = render_page(run_dir)
+            self.assertIn("这次运行没有成交", empty)
+            self.assertIn("id='empty-state'", empty)
+            self.assertIn("权益曲线", empty)
+            self.assertIn("已实现收益", empty)
+            self.assertIn("到达成本", empty)
+            self.assertIn("参与率", empty)
+            self.assertIn("可改进方向", empty)
+            self._write_view_run(run_dir, fills=True)
+            page = render_page(run_dir)
+            self.assertNotIn("id='empty-state'", page)
+            self.assertIn("BUY", page)
+            self.assertIn("100.01", page)
+            self.assertIn("到达成本", page)
+            server = bind_server(run_dir, 0)
+            try:
+                host, port = server.server_address[:2]
+                self.assertEqual(host, "127.0.0.1")
+                import threading
+                import urllib.request
+
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as response:
+                    status = response.status
+                    body = response.read().decode("utf-8")
+                self.assertEqual(status, 200)
+                self.assertIn("每笔成交", body)
+                self.assertIn("回放是否一致", body)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def _write_view_run(self, run_dir: Path, fills: bool) -> None:
+        ledger = {
+            "starting_balances": ["10000 USDT"],
+            "balances": {"USDT": "9999.9" if fills else "10000", "BTC": "0"},
+            "fills": [],
+            "orders": [],
+        }
+        if fills:
+            ledger["orders"] = [{"client_order_id": "O-1", "side": "BUY"}]
+            ledger["fills"] = [
+                {
+                    "trade_id": "T-1",
+                    "client_order_id": "O-1",
+                    "side": "BUY",
+                    "quantity": "0.12",
+                    "price": "100.01",
+                    "commission": "0.012 USDT",
+                    "liquidity_side": "TAKER",
+                    "ts_event": 1_000_000_000,
+                    "ts_init": 1_000_000_000,
+                    "tags": ["ts_decision=0", "mid=100.005", "title=通路测试"],
+                }
+            ]
+        (run_dir / "ledger.json").write_text(json.dumps(ledger), encoding="utf-8")
+        snapshot = {
+            "strategy": "connectivity",
+            "participation_warn": "0.01",
+            "matching": {
+                "instrument_id": "BTCUSDT.BINANCE",
+                "starting_balance": "10000 USDT",
+                "latency_ns": 100_000_000,
+            },
+        }
+        (run_dir / "config_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+        report = run_dir / "report"
+        report.mkdir(exist_ok=True)
+        acceptance = {
+            "replay_diff_zero": {"met": True, "replay_diff": 0, "live_vs_replay_diff": 0},
+            "participation_fee_arrival": {"participation": "0.0001" if fills else None},
+        }
+        (report / "acceptance.json").write_text(json.dumps(acceptance), encoding="utf-8")
+        (report / "header.json").write_text(json.dumps({"title": "通路测试"}), encoding="utf-8")
 
 
 if __name__ == "__main__":
