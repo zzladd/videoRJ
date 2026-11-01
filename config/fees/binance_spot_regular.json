@@ -1,0 +1,14 @@
+{
+  "fee_version": "binance-spot-regular-2026-11-01",
+  "venue": "BINANCE",
+  "product": "spot",
+  "account_tier": "Regular User",
+  "bnb_discount": false,
+  "maker_rate": "0.001",
+  "taker_rate": "0.001",
+  "maker_rate_display": "0.100%",
+  "taker_rate_display": "0.100%",
+  "retrieved_on": "2026-11-01",
+  "source": "https://www.binance.com/en/fee/trading",
+  "source_note": "公开费率表 Regular User 一行的 Maker/Taker 列，不是 BNB 七五折列，也不是 USDC 交易对列。BTCUSDT 不是 USDC 交易对。本进程没有账户，因此不假设用 BNB 支付手续费。"
+}

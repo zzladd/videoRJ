@@ -1,0 +1,23 @@
+[project]
+name = "paper-spot"
+version = "0.1.0"
+description = "第一期加密现货影子盘。行情只读，订单只进本机沙箱。"
+requires-python = ">=3.12"
+dependencies = [
+  "nautilus_trader==1.231.0",
+  "pandas>=2.2",
+  "pyarrow>=15",
+]
+
+[project.optional-dependencies]
+report = ["quantstats==0.0.86"]
+
+[project.scripts]
+paper-spot = "paper_spot.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
