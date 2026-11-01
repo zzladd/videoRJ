@@ -1,4 +1,4 @@
-"""命令行：自检、跑一次影子盘、重写报告、重放、本机查看。"""
+"""命令行：自检、跑一次影子盘、重写报告、重放、本机站点。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from paper_spot.session import check_session
 from paper_spot.session import replay_session
 from paper_spot.session import run_session
 from paper_spot.session import write_outputs
+from paper_spot.site import serve_site
 from paper_spot.view import serve_run
 
 
@@ -37,7 +38,10 @@ def main(argv: list[str] | None = None) -> int:
     replay = sub.add_parser("replay", help="用同一套撮合把行情重放两遍")
     replay.add_argument("run_dir", type=Path)
 
-    view = sub.add_parser("view", help="在 127.0.0.1 打开一次运行目录")
+    serve = sub.add_parser("serve", help="在 127.0.0.1 打开本机量化站点")
+    serve.add_argument("--port", type=int, default=8765)
+
+    view = sub.add_parser("view", help="在本机站点打开一次运行目录")
     view.add_argument("run_dir", type=Path)
     view.add_argument("--port", type=int, default=8765)
 
@@ -64,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
             write_outputs(args.run_dir, replay=False)
         elif args.command == "replay":
             replay_session(args.run_dir)
+        elif args.command == "serve":
+            serve_site(port=args.port, root=root)
         elif args.command == "view":
             serve_run(args.run_dir, args.port)
     except (ConfigError, ShadowGuardError, ValueError) as exc:

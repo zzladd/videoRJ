@@ -72,6 +72,8 @@ from paper_spot.strategies.api import OrderIntent
 from paper_spot.strategies.connectivity import connectivity_decide
 from paper_spot.strategies.user_strategy import decide as user_decide
 from paper_spot.strategy import ConnectivityConfig
+from paper_spot.site import Site
+from paper_spot.site import bind_site
 from paper_spot.view import bind_server
 from paper_spot.view import realized_curve
 from paper_spot.view import render_page
@@ -865,6 +867,53 @@ class Phase1Tests(unittest.TestCase):
         }
         (report / "acceptance.json").write_text(json.dumps(acceptance), encoding="utf-8")
         (report / "header.json").write_text(json.dumps({"title": "通路测试"}), encoding="utf-8")
+
+    def test_site_lists_runs_and_binds_localhost(self) -> None:
+        import threading
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        root = repo_root()
+        with tempfile.TemporaryDirectory() as temporary:
+            runs_dir = Path(temporary) / "runs"
+            runs_dir.mkdir()
+            run_dir = runs_dir / "demo-run"
+            run_dir.mkdir()
+            self._write_view_run(run_dir, fills=True)
+            site = Site(root=root, runs_dir=runs_dir)
+            names = [row["name"] for row in site.list_runs()]
+            self.assertEqual(names, ["demo-run"])
+            server = bind_site(site, 0)
+            try:
+                host, port = server.server_address[:2]
+                self.assertEqual(host, "127.0.0.1")
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                base = f"http://127.0.0.1:{port}"
+                home = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
+                self.assertIn("通路测试", home)
+                self.assertIn("发起通路测试", home)
+                self.assertIn("demo-run", home)
+                runs = urllib.request.urlopen(base + "/runs", timeout=5).read().decode("utf-8")
+                self.assertIn("demo-run", runs)
+                detail = urllib.request.urlopen(base + "/runs/demo-run", timeout=5).read().decode("utf-8")
+                self.assertIn("权益曲线", detail)
+                self.assertIn("100.01", detail)
+                strategy = urllib.request.urlopen(base + "/strategy", timeout=5).read().decode("utf-8")
+                self.assertIn("user_strategy.py", strategy)
+                start = urllib.request.urlopen(base + "/start", timeout=5).read().decode("utf-8")
+                self.assertIn("发起通路测试", start)
+                payload = urllib.parse.urlencode({"seconds": "999", "strategy": "connectivity"}).encode()
+                request = urllib.request.Request(base + "/start", data=payload, method="POST")
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(raised.exception.code, 400)
+                body = raised.exception.read().decode("utf-8")
+                self.assertIn("最多 300 秒", body)
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ PYTHONPATH=src python3 -m paper_spot check
 PYTHONPATH=src python3 -m paper_spot run --seconds 120
 PYTHONPATH=src python3 -m paper_spot report runs/<目录>
 PYTHONPATH=src python3 -m paper_spot replay runs/<目录>
+PYTHONPATH=src python3 -m paper_spot serve
 PYTHONPATH=src python3 -m paper_spot view runs/<目录>
 ```
 
@@ -87,13 +88,29 @@ PYTHONPATH=src python3 -m paper_spot run --strategy user --seconds 120
 
 `--strategy` 也可以是另一个含 `decide(market)` 的 `.py` 文件。不写 `--strategy` 时仍是连通性策略。恢复同一目录时要带上同一次的 `--strategy`。
 
-## 本机查看
+## 本机站点
+
+基础控制台，只绑定 `127.0.0.1`：
+
+```bash
+PYTHONPATH=src python3 -m paper_spot serve
+```
+
+默认端口 8765，可用 `--port` 换。打开后有：
+
+- 总览：最近运行、当前配置
+- 运行列表与单次详情：权益曲线、已实现收益、每笔成交、到达成本、参与率、可改进方向
+- 策略：编辑 `user_strategy.py` 并保存（保存前会检查 `decide`）
+- 发起通路测试：选策略和秒数（站点一次最多 300 秒）
+- 自检、重写报告、回放
+
+也可以直接落到某次运行：
 
 ```bash
 PYTHONPATH=src python3 -m paper_spot view runs/<目录>
 ```
 
-页面只绑定 `127.0.0.1`，地址会打印出来。默认端口 8765，可以用 `--port` 换。它只读这个目录里的账本和报告，不拉外部行情。
+站点只读本机 `runs/` 与配置，不拉外部行情，不注册交易所执行客户端。
 
 ## 费率
 

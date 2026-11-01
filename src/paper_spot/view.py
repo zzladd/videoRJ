@@ -42,23 +42,67 @@ def bind_server(run_dir: Path, port: int = 8765) -> ThreadingHTTPServer:
 
 
 def serve_run(run_dir: Path, port: int = 8765) -> None:
-    """绑定 127.0.0.1。没有 --host 参数，避免监听到别的网卡。"""
-    server = bind_server(run_dir, port)
-    bound_port = server.server_address[1]
-    print(f"查看页 http://{_HOST}:{bound_port}/")
-    print(f"目录 {run_dir.resolve()}")
-    print("只绑定 127.0.0.1。Ctrl+C 结束。")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("查看页已关闭。")
-    finally:
-        server.server_close()
+    """打开本机站点并落到这一次运行。仍只绑定 127.0.0.1。"""
+    from paper_spot.site import serve_site
+
+    run_dir = run_dir.resolve()
+    if not run_dir.is_dir():
+        raise ConfigError(f"没有这个运行目录：{run_dir}")
+    if not (run_dir / "ledger.json").is_file():
+        raise ConfigError(f"{run_dir / 'ledger.json'} 不存在。先跑一次 paper_spot run。")
+    serve_site(port=port, root=repo_root(), runs_dir=run_dir.parent, focus_run=run_dir.name)
 
 
 def render_page(run_dir: Path) -> str:
     model = build_model(run_dir)
-    return _html(model)
+    return _standalone_html(model)
+
+
+def render_run_body(model: dict[str, Any]) -> str:
+    """运行详情的图和表，给本机站点套壳用。"""
+    empty = model["empty"]
+    banner = ""
+    if empty:
+        banner = "<p class='empty' id='empty-state'>这次运行没有成交。下面的图没有成交样本。</p>"
+    fee_bps = _bps(model["fee_total"], model["notional_total"])
+    notes = _notes(model, fee_bps)
+    return f"""
+<p class="meta">目录 {html.escape(model["run_name"])}　交易对 {html.escape(str(model["instrument"] or "未知"))}　策略 {html.escape(str(model["strategy"]))}。只展示这次运行已经写下的数，没有外部行情，也不是买卖建议。</p>
+{banner}
+<p>起始现金 {_num(model["starting"])} USDT。结束现金 {_num(model["ending_cash"])} USDT。结束时基础币 {_num(model["base_left"])}。</p>
+<section id="equity">
+<h2>权益曲线</h2>
+<p>每笔成交之后，用当时的中间价给剩余基础币计价。没有行情中间价时，用成交价自己。</p>
+{_line_svg(model["equity"], "权益 USDT")}
+</section>
+<section id="realized">
+<h2>已实现收益</h2>
+<p>买入只累积成本（含买入费用）。卖出时结算这一段。持仓还在时，曲线不把浮盈算成已实现。合计 {_num(model["realized_total"])} USDT。</p>
+{_line_svg(model["realized"], "已实现 USDT")}
+</section>
+<section id="fills">
+<h2>每笔成交</h2>
+{_fill_table(model["fills"])}
+<h3>价格</h3>
+{_dot_svg(model["fills"])}
+<h3>费用</h3>
+{_bar_svg([(row["time"], row["fee"]) for row in model["fills"]], "费用 USDT")}
+</section>
+<section id="arrival">
+<h2>到达成本</h2>
+<p>买入是 (成交价 - 决策中间价) / 中间价，卖出反过来，单位是基点。正数表示这次成交比决策中间价更差。</p>
+{_bar_svg([(row["time"], row["arrival"]) for row in model["fills"] if row["arrival"] is not None], "到达成本 bps", zero=True)}
+</section>
+<section id="participation">
+<h2>参与率</h2>
+{_participation_svg(model)}
+</section>
+<section id="improve">
+<h2>可改进方向</h2>
+<p>下面每条都只对照这次目录里的数。条形是为了看见相对长短，不是外部评级。</p>
+{notes}
+</section>
+"""
 
 
 def build_model(run_dir: Path) -> dict[str, Any]:
@@ -159,79 +203,45 @@ def _handler(page: str):
     return Handler
 
 
-def _html(model: dict[str, Any]) -> str:
-    empty = model["empty"]
-    banner = ""
-    if empty:
-        banner = "<p class='empty' id='empty-state'>这次运行没有成交。下面的图没有成交样本。</p>"
-    fee_bps = _bps(model["fee_total"], model["notional_total"])
-    notes = _notes(model, fee_bps)
+def _standalone_html(model: dict[str, Any]) -> str:
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <title>通路测试 {html.escape(model["run_name"])}</title>
 <style>
-body {{ margin: 0; font-family: "Segoe UI", "Noto Sans SC", sans-serif; background: #f4f1ea; color: #1c1915; }}
-main {{ max-width: 980px; margin: 0 auto; padding: 28px 20px 64px; }}
-h1 {{ font-size: 28px; margin: 0 0 8px; }}
-h2 {{ font-size: 18px; margin: 28px 0 8px; }}
-p {{ line-height: 1.5; }}
-.meta {{ color: #5c564c; }}
-.empty {{ background: #fff6d8; border: 1px solid #e0c36a; padding: 12px 14px; border-radius: 8px; }}
-section {{ background: white; border-radius: 12px; padding: 16px 18px 20px; margin-top: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }}
-table {{ width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }}
-th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 14px; }}
-.note {{ display: grid; grid-template-columns: 140px 1fr; gap: 8px 16px; padding: 10px 0; border-top: 1px solid #eee; }}
-.note b {{ font-size: 14px; }}
-.bar {{ height: 10px; background: #ece7dc; border-radius: 99px; margin-top: 6px; }}
-.bar span {{ display: block; height: 10px; border-radius: 99px; background: #2f6f4e; }}
-.watch span {{ background: #a15c07; }}
-svg {{ width: 100%; height: auto; }}
-.axis {{ fill: #6b645b; font-size: 12px; }}
+{_PAGE_CSS}
 </style>
 </head>
 <body>
 <main>
 <h1>{html.escape(str(model["header_title"]))} 查看</h1>
-<p class="meta">目录 {html.escape(model["run_name"])}　交易对 {html.escape(str(model["instrument"] or "未知"))}　策略 {html.escape(str(model["strategy"]))}。只展示这次运行已经写下的数，没有外部行情，也不是买卖建议。</p>
-{banner}
-<p>起始现金 { _num(model["starting"]) } USDT。结束现金 { _num(model["ending_cash"]) } USDT。结束时基础币 { _num(model["base_left"]) }。</p>
-<section id="equity">
-<h2>权益曲线</h2>
-<p>每笔成交之后，用当时的中间价给剩余基础币计价。没有行情中间价时，用成交价自己。</p>
-{_line_svg(model["equity"], "权益 USDT")}
-</section>
-<section id="realized">
-<h2>已实现收益</h2>
-<p>买入只累积成本（含买入费用）。卖出时结算这一段。持仓还在时，曲线不把浮盈算成已实现。合计 { _num(model["realized_total"]) } USDT。</p>
-{_line_svg(model["realized"], "已实现 USDT")}
-</section>
-<section id="fills">
-<h2>每笔成交</h2>
-{_fill_table(model["fills"])}
-<h3>价格</h3>
-{_dot_svg(model["fills"])}
-<h3>费用</h3>
-{_bar_svg([(row["time"], row["fee"]) for row in model["fills"]], "费用 USDT")}
-</section>
-<section id="arrival">
-<h2>到达成本</h2>
-<p>买入是 (成交价 - 决策中间价) / 中间价，卖出反过来，单位是基点。正数表示这次成交比决策中间价更差。</p>
-{_bar_svg([(row["time"], row["arrival"]) for row in model["fills"] if row["arrival"] is not None], "到达成本 bps", zero=True)}
-</section>
-<section id="participation">
-<h2>参与率</h2>
-{_participation_svg(model)}
-</section>
-<section id="improve">
-<h2>可改进方向</h2>
-<p>下面每条都只对照这次目录里的数。条形是为了看见相对长短，不是外部评级。</p>
-{notes}
-</section>
+{render_run_body(model)}
 </main>
 </body>
 </html>
+"""
+
+
+_PAGE_CSS = """
+body { margin: 0; font-family: "IBM Plex Sans", "Noto Sans SC", sans-serif; background: linear-gradient(180deg, #d9e4ef 0%, #eef2f6 220px, #eef2f6 100%); color: #132033; }
+main { max-width: 980px; margin: 0 auto; padding: 28px 20px 64px; }
+h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.02em; }
+h2 { font-size: 18px; margin: 0 0 8px; }
+h3 { font-size: 15px; margin: 18px 0 8px; color: #3b4a5c; }
+p { line-height: 1.55; }
+.meta { color: #5a6a7c; }
+.empty { background: #fff4d6; border: 1px solid #e0c36a; padding: 12px 14px; border-radius: 8px; }
+section { background: rgba(255,255,255,.92); border: 1px solid #d7e0ea; border-radius: 12px; padding: 16px 18px 20px; margin-top: 14px; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e6edf4; font-size: 14px; }
+.note { display: grid; grid-template-columns: 140px 1fr; gap: 8px 16px; padding: 10px 0; border-top: 1px solid #e6edf4; }
+.note b { font-size: 14px; }
+.bar { height: 10px; background: #d9e3ee; border-radius: 99px; margin-top: 6px; }
+.bar span { display: block; height: 10px; border-radius: 99px; background: #0f766e; }
+.watch span { background: #b45309; }
+svg { width: 100%; height: auto; }
+.axis { fill: #5a6a7c; font-size: 12px; }
 """
 
 
