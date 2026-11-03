@@ -22,6 +22,7 @@ from paper_spot.research.fetch import parse_binance_csv
 from paper_spot.research.indicators import macd
 from paper_spot.research.indicators import rsi
 from paper_spot.research.indicators import sma
+from paper_spot.research.service import catch_up
 from paper_spot.research.service import chart_payload
 from paper_spot.research.service import scan_dual_ma
 from paper_spot.research.service import sync_range
@@ -282,6 +283,46 @@ class ResearchTests(unittest.TestCase):
             self.assertEqual(result["fetched"], 1)
             self.assertEqual(result["coverage"]["count"], 1)
 
+    def test_catch_up_keeps_history_and_appends_the_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            calls: list[str] = []
+
+            def opener(url: str) -> HttpBody:
+                calls.append(url)
+                if "data.binance.vision" in url:
+                    return HttpBody(404, b"")
+                row = [1704153600000, "3", "4", "2", "3", "5", 1704239999999, "6", 1, "1", "1", "0"]
+                return HttpBody(200, json.dumps([row]).encode("utf-8"))
+
+            empty = catch_up(root, "BINANCE", "BTCUSDT", "1d", opener, NOW)
+            self.assertEqual(empty["fetched"], 0)
+            self.assertEqual(calls, [])
+            upsert_bars(
+                root,
+                "BINANCE",
+                "BTCUSDT",
+                "1d",
+                [
+                    Bar(
+                        open_time=1704067200000,
+                        open=Decimal("1"),
+                        high=Decimal("2"),
+                        low=Decimal("1"),
+                        close=Decimal("2"),
+                        volume=Decimal("3"),
+                    )
+                ],
+            )
+            current = catch_up(root, "BINANCE", "BTCUSDT", "1d", opener, 1704153601000)
+            self.assertEqual(current["fetched"], 0)
+            self.assertEqual(calls, [])
+            appended = catch_up(root, "BINANCE", "BTCUSDT", "1d", opener, NOW)
+            self.assertEqual(appended["fetched"], 1)
+            self.assertEqual(appended["coverage"]["count"], 2)
+            self.assertTrue(all("startTime=1704153600000" in url or "data.binance.vision" in url for url in calls))
+            self.assertFalse(any("startTime=1704067200000" in url for url in calls))
+
     def test_research_page_and_json_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             site = Site(root=Path(temporary), runs_dir=Path(temporary) / "runs")
@@ -327,6 +368,19 @@ class ResearchTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, 400)
                 payload = json.loads(caught.exception.read().decode("utf-8"))
                 self.assertIn("缺口", payload["error"])
+                caught_up = json.loads(
+                    urlopen(
+                        Request(
+                            f"http://127.0.0.1:{port}/api/research/catchup",
+                            data=body,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        ),
+                        timeout=5,
+                    ).read()
+                )
+                self.assertEqual(caught_up["fetched"], 0)
+                self.assertFalse(caught_up["appended"])
             finally:
                 server.shutdown()
                 server.server_close()

@@ -138,7 +138,7 @@ PYTHONPATH=src python3 -m paper_spot bars sync --symbol BTCUSDT --interval 1d --
 PYTHONPATH=src python3 -m paper_spot serve
 ```
 
-打开 `http://127.0.0.1:8765/research`。周期有 1 分钟、5 分钟、15 分钟、30 分钟、60 分钟和日线。主图是红涨绿跌的蜡烛图，上面画双均线和信号。下面两个指标窗可以各自切换成交量、MACD、RSI、KDJ、ATR、OBV，并和主图共用十字线和缩放。MACD 柱按同花顺写成 `2×(DIF−DEA)`。
+打开 `http://127.0.0.1:8765/research`。点一次「补齐本地 K 线」后，数据留在 `data/bars/`。下次打开同一标的和周期会直接画出来，并只追加最后一根之后新收盘的柱。周期有 1 分钟、5 分钟、15 分钟、30 分钟、60 分钟和日线。主图是红涨绿跌的蜡烛图，上面画双均线和信号。下面两个指标窗可以各自切换成交量、MACD、RSI、KDJ、ATR、OBV，并和主图共用十字线和缩放。MACD 柱按同花顺写成 `2×(DIF−DEA)`。
 
 双均线在收盘确认金叉或死叉，下一根开盘价全仓买入或卖出，费用用该场所费率文件里的吃单费率。扫描窗口和验证窗口必须错开，验证要晚于扫描。结果写在 `data/experiments/<时间>/result.json`，并把用到的 K 线范围钉死。这是 K 线级验证，不是 L2 沙箱成交。实时通路仍从「发起」进入。
 

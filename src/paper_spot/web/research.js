@@ -11,23 +11,26 @@ const state = {
   lock: false,
   viewStart: "",
   viewEnd: "",
+  catchupFor: "",
 };
 
 const $ = (id) => document.getElementById(id);
 
 function boot() {
+  restoreField("venue", "paper-spot-venue");
+  restoreField("symbol", "paper-spot-symbol");
+  restoreField("sync-start", "paper-spot-sync-start");
+  restoreField("fast", "paper-spot-fast");
+  restoreField("slow", "paper-spot-slow");
   $("ind1").value = state.ind1;
   $("ind2").value = state.ind2;
   document.querySelectorAll("#periods button").forEach((button) => {
     button.classList.toggle("on", button.dataset.interval === state.interval);
     button.addEventListener("click", () => {
-      state.interval = button.dataset.interval;
-      localStorage.setItem("paper-spot-interval", state.interval);
-      document.querySelectorAll("#periods button").forEach((item) => {
-        item.classList.toggle("on", item === button);
-      });
+      markInterval(button.dataset.interval);
       state.viewStart = "";
       state.viewEnd = "";
+      state.catchupFor = "";
       loadChart();
     });
   });
@@ -36,8 +39,24 @@ function boot() {
   $("sync").addEventListener("click", syncBars);
   $("scan").addEventListener("click", scanGrid);
   $("validate").addEventListener("click", validateWindow);
-  $("fast").addEventListener("change", loadChart);
-  $("slow").addEventListener("change", loadChart);
+  $("fast").addEventListener("change", () => {
+    rememberLibrary();
+    loadChart();
+  });
+  $("slow").addEventListener("change", () => {
+    rememberLibrary();
+    loadChart();
+  });
+  $("venue").addEventListener("change", () => {
+    rememberLibrary();
+    state.catchupFor = "";
+    chooseStoredInterval().then(loadChart);
+  });
+  $("symbol").addEventListener("change", () => {
+    rememberLibrary();
+    state.catchupFor = "";
+    chooseStoredInterval().then(loadChart);
+  });
   $("rank-body").addEventListener("click", (event) => {
     const row = event.target.closest("tr");
     if (!row || !row.dataset.fast) return;
@@ -50,7 +69,46 @@ function boot() {
     loadChart();
   });
   window.addEventListener("resize", resizeCharts);
-  loadChart();
+  chooseStoredInterval().then(loadChart);
+}
+
+function restoreField(id, key) {
+  const value = localStorage.getItem(key);
+  if (value) $(id).value = value;
+}
+
+function rememberLibrary() {
+  localStorage.setItem("paper-spot-venue", $("venue").value);
+  localStorage.setItem("paper-spot-symbol", $("symbol").value.trim().toUpperCase());
+  localStorage.setItem("paper-spot-sync-start", $("sync-start").value);
+  localStorage.setItem("paper-spot-fast", $("fast").value);
+  localStorage.setItem("paper-spot-slow", $("slow").value);
+}
+
+function markInterval(interval) {
+  state.interval = interval;
+  localStorage.setItem("paper-spot-interval", interval);
+  document.querySelectorAll("#periods button").forEach((item) => {
+    item.classList.toggle("on", item.dataset.interval === interval);
+  });
+}
+
+async function chooseStoredInterval() {
+  try {
+    const report = await request(
+      "/api/research/coverage?venue=" +
+        encodeURIComponent($("venue").value) +
+        "&symbol=" +
+        encodeURIComponent($("symbol").value.trim().toUpperCase())
+    );
+    const rows = report.intervals || [];
+    const current = rows.find((row) => row.interval === state.interval);
+    if (current && current.count) return;
+    const ready = rows.find((row) => row.count);
+    if (ready) markInterval(ready.interval);
+  } catch (error) {
+    // 覆盖接口失败时仍尝试画已有图。
+  }
 }
 
 function rememberIndicator(id) {
@@ -90,14 +148,27 @@ async function loadChart() {
       ? `本地 ${coverage.count} 根，图上 ${payload.count} 根${payload.truncated ? "（只显示最近一段）" : ""}`
       : "本地还没有这个周期。先补齐 K 线。";
     const gaps = (payload.gaps || []).length;
-    setStatus(`${payload.symbol} ${payload.label} · ${when}${gaps ? ` · 图上有 ${gaps} 处缺口` : ""}`);
+    const kept = coverage.count ? "下次打开直接使用这份库。" : "";
+    setStatus(`${payload.symbol} ${payload.label} · ${when}${gaps ? ` · 图上有 ${gaps} 处缺口` : ""} ${kept}`.trim());
+    $("sync").textContent = coverage.count ? "追加最新" : "补齐本地 K 线";
     renderSummary(payload.summary);
+    const key = `${payload.venue}:${payload.symbol}:${payload.interval}`;
+    if (coverage.count && state.catchupFor !== key) {
+      state.catchupFor = key;
+      catchUp(false);
+    }
   } catch (error) {
     setStatus(error.message, true);
   }
 }
 
 async function syncBars() {
+  rememberLibrary();
+  if (libraryCoversStart()) {
+    state.catchupFor = "";
+    await catchUp(true);
+    return;
+  }
   setStatus("正在从官方公开行情补本地 K 线…");
   const body = {
     venue: $("venue").value,
@@ -112,10 +183,44 @@ async function syncBars() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    setStatus(`已写入 ${result.fetched} 根。本地共 ${result.coverage.count} 根。`);
+    state.catchupFor = `${body.venue}:${body.symbol}:${body.interval}`;
+    setStatus(`已写入 ${result.fetched} 根。本地共 ${result.coverage.count} 根。下次打开直接使用。`);
     await loadChart();
   } catch (error) {
     setStatus(error.message, true);
+  }
+}
+
+function libraryCoversStart() {
+  const coverage = state.payload && state.payload.coverage;
+  if (!coverage || !coverage.count || coverage.first_open_ms == null) return false;
+  if (coverage.symbol !== $("symbol").value.trim().toUpperCase()) return false;
+  if (coverage.interval !== state.interval) return false;
+  if (coverage.venue !== $("venue").value) return false;
+  const startMs = Date.parse(`${$("sync-start").value}T00:00:00Z`);
+  return Number.isFinite(startMs) && startMs >= coverage.first_open_ms;
+}
+
+async function catchUp(manual) {
+  const venue = $("venue").value;
+  const symbol = $("symbol").value.trim().toUpperCase();
+  try {
+    const result = await request("/api/research/catchup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ venue, symbol, interval: state.interval }),
+    });
+    state.catchupFor = `${venue}:${symbol}:${state.interval}`;
+    if (result.fetched) {
+      setStatus(`追加了 ${result.fetched} 根。本地共 ${result.coverage.count} 根。`);
+      await loadChart();
+      return;
+    }
+    if (manual) {
+      setStatus(`本地库已是最新，共 ${result.coverage.count} 根。下次打开直接使用。`);
+    }
+  } catch (error) {
+    if (manual) setStatus(error.message, true);
   }
 }
 

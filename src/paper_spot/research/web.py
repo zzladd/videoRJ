@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from paper_spot.research.intervals import INTERVAL_LABELS
+from paper_spot.research.service import catch_up
 from paper_spot.research.service import chart_payload
 from paper_spot.research.service import coverage_report
 from paper_spot.research.service import end_of_utc_date
@@ -60,7 +61,7 @@ def serve_get(root: Path, path: str, query: dict[str, list[str]]) -> tuple[int, 
 
 
 def serve_post(root: Path, path: str, body: bytes) -> tuple[int, str, bytes] | None:
-    if path not in {"/api/research/sync", "/api/research/scan", "/api/research/validate"}:
+    if path not in {"/api/research/sync", "/api/research/catchup", "/api/research/scan", "/api/research/validate"}:
         return None
     document = _read_json(body)
     venue = _name(str(document.get("venue") or "BINANCE"), "场所")
@@ -71,6 +72,8 @@ def serve_post(root: Path, path: str, body: bytes) -> tuple[int, str, bytes] | N
         end_text = str(document.get("end") or "").strip()
         end_ms = end_of_utc_date(end_text) if end_text else _today_end()
         return _json(sync_range(root, venue, symbol, interval, start_ms, end_ms))
+    if path == "/api/research/catchup":
+        return _json(catch_up(root, venue, symbol, interval))
     if path == "/api/research/scan":
         return _json(
             scan_dual_ma(

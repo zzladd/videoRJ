@@ -63,6 +63,35 @@ def sync_range(
     return {"fetched": len(incoming), "coverage": coverage}
 
 
+def catch_up(
+    root: Path,
+    venue: str,
+    symbol: str,
+    interval: str,
+    opener: Opener | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    """库已存在时只追加最后一根之后的已收盘 K 线。空库不访问交易所。"""
+    now_ms = _now_ms() if now_ms is None else now_ms
+    bars = load_bars(root, venue, symbol, interval)
+    coverage = read_coverage(root, venue, symbol, interval)
+    if not bars:
+        return {"fetched": 0, "coverage": coverage, "appended": False}
+    step = interval_ms(interval)
+    start_ms = bars[-1].open_time + step
+    last_closed = (now_ms - (now_ms % step)) - step
+    if start_ms > last_closed:
+        return {"fetched": 0, "coverage": coverage, "appended": False}
+    try:
+        result = sync_range(root, venue, symbol, interval, start_ms, last_closed, opener, now_ms)
+    except ValueError as exc:
+        if "没有拉到" in str(exc):
+            return {"fetched": 0, "coverage": coverage, "appended": False}
+        raise
+    result["appended"] = True
+    return result
+
+
 def coverage_report(root: Path, venue: str, symbol: str) -> dict[str, Any]:
     rows = []
     for interval in INTERVAL_LABELS:
