@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>研究 · 本地 K 线</title>
+<style>
+:root {
+  --bg: #0b0e11;
+  --panel: #12171d;
+  --ink: #e8eef4;
+  --muted: #8b9aab;
+  --line: #243140;
+  --red: #ff4d4f;
+  --green: #00b578;
+  --gold: #f0b90b;
+  --blue: #5aa2ff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", "Source Han Sans SC", "Noto Sans SC", sans-serif;
+}
+a { color: var(--blue); text-decoration: none; }
+.top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  background: #10151b;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.brand { color: var(--ink); font-weight: 700; font-size: 18px; letter-spacing: -0.03em; }
+nav { display: flex; gap: 4px; flex-wrap: wrap; }
+nav a { color: var(--muted); padding: 7px 10px; border-radius: 8px; font-size: 14px; }
+nav a.on, nav a:hover { background: #1c2632; color: var(--ink); }
+.badge { margin-left: auto; color: var(--muted); font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; }
+main { padding: 14px 16px 40px; }
+.toolbar, .result, .rank {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+label input.mas { width: 8.5rem; }
+input, select, button {
+  background: #0e1318;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+}
+button { cursor: pointer; }
+button.primary { background: #1d4ed8; border-color: #1d4ed8; }
+button.on { background: #1c2632; color: var(--gold); border-color: #3a4b60; }
+.periods { display: flex; gap: 6px; flex-wrap: wrap; }
+.note { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0 0 12px; }
+#status { min-height: 1.3em; font-size: 13px; color: var(--muted); margin: 8px 0; }
+#status.error { color: var(--red); }
+.chart-wrap {
+  position: relative;
+  background: #0b0e11;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  height: min(760px, calc(100vh - 230px));
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+}
+.legend {
+  position: absolute;
+  z-index: 3;
+  left: 12px;
+  top: 8px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.legend b { font-weight: 650; margin-right: 8px; }
+.up { color: var(--red); }
+.down { color: var(--green); }
+.pane-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+#pane-main { flex: 1 1 0; min-height: 0; }
+.subpane { flex: 0 0 22%; min-height: 0; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 8px; border-bottom: 1px solid var(--line); font-size: 14px; }
+th:first-child, td:first-child { text-align: left; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover, tr.picked { background: #18222d; }
+.muted { color: var(--muted); }
+h2 { font-size: 16px; margin: 0 0 8px; }
+@media (max-width: 800px) {
+  .badge { display: none; }
+  .chart-wrap { height: auto; min-height: 640px; }
+  #pane-main { height: 300px; flex: none; }
+  .subpane { height: 130px; flex: none; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">通路测试</a>
+  <nav>
+    <a href="/">总览</a>
+    <a href="/runs">运行</a>
+    <a href="/strategy">策略</a>
+    <a class="on" href="/research">研究</a>
+    <a href="/start">发起</a>
+    <a href="/check">自检</a>
+  </nav>
+  <span class="badge">127.0.0.1 · 本地 K 线</span>
+</header>
+<main>
+  <p class="note" id="method-note">补齐一次后，K 线留在本机。下次打开直接用这份库，只追加新收盘的柱，不必再补整段历史。K 线级验证用下一根开盘价和公开吃单费率，不是 L2 沙箱。</p>
+  <section class="toolbar">
+    <div class="row">
+      <label>场所
+        <select id="venue">
+          <option value="BINANCE">BINANCE</option>
+          <option value="BYBIT">BYBIT</option>
+          <option value="OKX">OKX</option>
+        </select>
+      </label>
+      <label>标的
+        <input id="symbol" value="BTCUSDT" spellcheck="false" autocomplete="off">
+      </label>
+      <div>
+        <div class="muted" style="font-size:12px;margin-bottom:4px;">周期</div>
+        <div class="periods" id="periods">
+          <button type="button" data-interval="1m">1分钟</button>
+          <button type="button" data-interval="5m">5分钟</button>
+          <button type="button" data-interval="15m">15分钟</button>
+          <button type="button" data-interval="30m">30分钟</button>
+          <button type="button" data-interval="1h">60分钟</button>
+          <button type="button" data-interval="1d" class="on">日线</button>
+        </div>
+      </div>
+      <label>主图均线
+        <input id="mas" class="mas" value="10,30" spellcheck="false" placeholder="8,23" title="逗号分隔，例如 8,23。最多 4 条。交叉用最短和最长的两条。">
+      </label>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <label>补库开始
+        <input id="sync-start" type="date" value="2024-01-01">
+      </label>
+      <label>补库结束（可空）
+        <input id="sync-end" type="date">
+      </label>
+      <button class="primary" id="sync" type="button">补齐本地 K 线</button>
+      <label>扫描开始
+        <input id="search-start" type="date" value="2024-01-01">
+      </label>
+      <label>扫描结束
+        <input id="search-end" type="date" value="2024-12-31">
+      </label>
+      <button id="scan" type="button">扫描双均线</button>
+      <label>验证开始
+        <input id="valid-start" type="date" value="2025-01-01">
+      </label>
+      <label>验证结束
+        <input id="valid-end" type="date" value="2025-12-31">
+      </label>
+      <button id="validate" type="button">样本外验证</button>
+    </div>
+    <div id="status">还没有加载本地 K 线。</div>
+  </section>
+  <section class="chart-wrap" id="chart-wrap">
+    <div class="legend" id="legend">把鼠标移到蜡烛上查看开高低收、涨跌和成交量。</div>
+    <div id="pane-main"></div>
+    <div class="pane-head"><span>指标一</span>
+      <select id="ind1">
+        <option value="volume">成交量</option>
+        <option value="macd">MACD</option>
+        <option value="rsi">RSI</option>
+        <option value="kdj">KDJ</option>
+        <option value="atr">ATR</option>
+        <option value="obv">OBV</option>
+      </select>
+    </div>
+    <div id="pane-1" class="subpane"></div>
+    <div class="pane-head"><span>指标二</span>
+      <select id="ind2">
+        <option value="volume">成交量</option>
+        <option value="macd" selected>MACD</option>
+        <option value="rsi">RSI</option>
+        <option value="kdj">KDJ</option>
+        <option value="atr">ATR</option>
+        <option value="obv">OBV</option>
+      </select>
+    </div>
+    <div id="pane-2" class="subpane"></div>
+  </section>
+  <section class="result" id="result">
+    <h2>这次窗口</h2>
+    <p class="muted" id="summary">选择参数后，收益、回撤和费用会显示在这里。成交圆点按这笔平仓盈亏着色，未成交的信号仍是三角。</p>
+  </section>
+  <section class="rank">
+    <h2>双均线扫描</h2>
+    <p class="muted">快线 5、10、20，慢线 10、20、30、60，且快线短于慢线。按收益率从高到低。点一行就把这对周期写进主图均线。</p>
+    <table>
+      <thead>
+        <tr><th>快/慢</th><th>收益率</th><th>最大回撤</th><th>费用</th><th>成交笔数</th><th>期末权益</th></tr>
+      </thead>
+      <tbody id="rank-body"></tbody>
+    </table>
+  </section>
+</main>
+<script src="/research/lightweight-charts.standalone.production.js"></script>
+<script src="/research/app.js"></script>
+</body>
+</html>

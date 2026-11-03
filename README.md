@@ -1,1 +1,217 @@
-# videoRJ
+# 通路测试：加密现货影子盘（第一期）
+
+订单只进本机沙箱。行情用交易所官方公共 JSON，不配置交易 API 密钥，不注册交易所执行客户端。没有 A 股、期货、永续，也没有实盘下单。
+
+这一期用来打通链路。报告标题是「通路测试」。默认名义金额 12 USDT，上限 50 USDT，远小于盘口。
+
+## 依赖
+
+- Python 3.12
+- `nautilus_trader==1.231.0`
+- `pandas`、`pyarrow`
+- 可选：`quantstats==0.0.86`。装不上时仍会写日收益摘要，HTML 里的夏普、回撤和月度表就缺着。
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+在仓库根目录运行。程序会从当前目录或源码位置找到 `config/paper.json`。
+
+Windows 本机示例目录：`D:\code\lh\videoRJ`。先进入该目录再执行：
+
+```powershell
+cd D:\code\lh\videoRJ
+$env:PYTHONPATH = "src"
+python -m pip install -r requirements.txt
+python -m paper_spot check
+python -m paper_spot run --seconds 120
+python -m paper_spot report runs/<目录>
+python -m paper_spot replay runs/<目录>
+python -m paper_spot serve
+python -m paper_spot view runs/<目录>
+```
+
+Linux / macOS：
+
+```bash
+PYTHONPATH=src python3 -m paper_spot check
+PYTHONPATH=src python3 -m paper_spot run --seconds 120
+PYTHONPATH=src python3 -m paper_spot report runs/<目录>
+PYTHONPATH=src python3 -m paper_spot replay runs/<目录>
+PYTHONPATH=src python3 -m paper_spot serve
+PYTHONPATH=src python3 -m paper_spot view runs/<目录>
+```
+
+连续覆盖加密市场 24 小时时，把秒数设成 86400。进程中断后用同一个目录恢复，现金不会被重置成 10000：
+
+```bash
+PYTHONPATH=src python3 -m paper_spot run --seconds 86400 --run-dir runs/<目录> --resume
+```
+
+## 这次实际用的行情
+
+程序按这个顺序探测官方接入点，只选一个现货交易对：
+
+1. Binance 现货默认域名，交易对 `BTCUSDT`
+2. Binance 官方行情域名 `data-api.binance.vision` 和 `data-stream.binance.vision`，仍是 `BTCUSDT`，仍用 Binance 官方适配器
+3. Bybit 官方现货，交易对 `BTCUSDT`（品种号 `BTCUSDT-SPOT.BYBIT`）
+4. OKX 官方现货，交易对 `BTC-USDT`（品种号 `BTC-USDT.OKX`）
+
+探测结果写在该次运行的 `config_snapshot.json`。默认域名返回 451 时，第二项是 Binance 公布的行情专用接入点，不是代理，也不是别的行情源。三家官方接入点都不可达时，程序直接停止。
+
+## 配置
+
+`config/paper.json`：
+
+| 项 | 默认 | 作用 |
+| --- | --- | --- |
+| `starting_balance` | `10000 USDT` | 沙箱现金账户 |
+| `latency_ms` | 100 | 下单、改单、撤单延迟 |
+| `book_depth` / `book_update_speed_ms` | 20 / 100 | 有限深度 |
+| `order_quote_notional` | 12 USDT | 连通性买单的名义金额 |
+| `max_notional_per_order` | 50 USDT | 单笔上限 |
+| `imbalance_multiple` | 1.2 | 买一量至少是卖一量的倍数才买；反向才卖 |
+| `protection_band` | 0.005 | 限价相对决策中间价的 0.5% |
+| `session_seconds` | 120 | 到点停止。可用 `--seconds` 覆盖 |
+| `gap_threshold_seconds` | 2 | 行情到达比交易所时间晚过这个值，不拿去撮合 |
+
+命令行可以覆盖会话时长和不平衡倍数。`--imbalance` 会写进该次配置哈希。恢复时不能改这个倍数，也不能改策略。
+
+## 策略
+
+默认 `paper_spot run` 使用连通性策略：买一量至少是卖一量的 `imbalance_multiple` 倍就买一小笔，反向就卖掉持仓。买卖写在 `src/paper_spot/strategies/connectivity.py` 的 `connectivity_decide`。
+
+要换成自己的买卖，改这一个文件：
+
+`src/paper_spot/strategies/user_strategy.py`
+
+函数签名：
+
+```python
+def decide(market: MarketView) -> OrderIntent | None:
+    ...
+```
+
+`market` 是已经到达的一笔最优买卖价，字段是 `instrument_id`、`ts_event`、`ts_init`、`bid`、`ask`、`bid_size`、`ask_size`、`base_qty`。返回 `OrderIntent(side="BUY", quote_notional=Decimal("12"))` 或 `OrderIntent(side="SELL")` 表示要下单，返回 `None` 表示这口行情不下单。`quote_notional` 省略时用配置里的 `order_quote_notional`。
+
+名义金额仍受 `max_notional_per_order` 约束。买单超过上限会被拒绝。卖单超过上限时只卖到上限。冷却时间和最多下单笔数仍由 `config/paper.json` 管。这个文件不要读交易密钥，也不要连接交易所。
+
+用自己的策略跑：
+
+```bash
+PYTHONPATH=src python3 -m paper_spot run --strategy user --seconds 120
+```
+
+`--strategy` 也可以是另一个含 `decide(market)` 的 `.py` 文件。不写 `--strategy` 时仍是连通性策略。恢复同一目录时要带上同一次的 `--strategy`。
+
+## 本机站点
+
+基础控制台，只绑定 `127.0.0.1`：
+
+```bash
+PYTHONPATH=src python3 -m paper_spot serve
+```
+
+默认端口 8765，可用 `--port` 换。打开后有：
+
+- 总览：最近运行、当前配置
+- 运行列表与单次详情：权益曲线、已实现收益、每笔成交、到达成本、参与率、可改进方向
+- 策略：编辑 `user_strategy.py` 并保存（保存前会检查 `decide`）
+- 发起通路测试：选策略和秒数（站点一次最多 300 秒）
+- 自检、重写报告、回放
+- 研究：本地 K 线、双均线扫描、样本外的 K 线级验证，以及蜡烛图和两个可切换指标窗
+
+也可以直接落到某次运行：
+
+```bash
+PYTHONPATH=src python3 -m paper_spot view runs/<目录>
+```
+
+通路测试页面只读本机 `runs/` 与配置，不注册交易所执行客户端。研究页会把官方公开 K 线补进本地 `data/bars/`，不使用交易密钥。
+
+## 研究
+
+本地已收盘 K 线是研究的数据本体。交易所只用来补历史和追加已收盘的柱。未收盘的柱不进扫描，也不进收益。
+
+```bash
+PYTHONPATH=src python3 -m paper_spot bars sync --symbol BTCUSDT --interval 1d --start 2024-01-01 --venue BINANCE
+PYTHONPATH=src python3 -m paper_spot serve
+```
+
+打开 `http://127.0.0.1:8765/research`。点一次「补齐本地 K 线」后，数据留在 `data/bars/`。下次打开同一标的和周期会直接画出来，并只追加最后一根之后新收盘的柱。周期有 1 分钟、5 分钟、15 分钟、30 分钟、60 分钟和日线。主图是红涨绿跌的蜡烛图。均线周期可以改，例如 `8,23`，最多 4 条；两条以上时，交叉用最短和最长的两条。信号画在主图上。下面两个指标窗可以各自切换成交量、MACD、RSI、KDJ、ATR、OBV，并和主图共用十字线和缩放。MACD 柱按同花顺写成 `2×(DIF−DEA)`。
+
+双均线在收盘确认金叉或死叉，下一根开盘价全仓买入或卖出，费用用该场所费率文件里的吃单费率。扫描窗口和验证窗口必须错开，验证要晚于扫描。结果写在 `data/experiments/<时间>/result.json`，并把用到的 K 线范围钉死。这是 K 线级验证，不是 L2 沙箱成交。实时通路仍从「发起」进入。
+
+`data/` 不进版本库。窗口里有缺口时，扫描和验证会停下来，等本地库补齐。
+
+## 费率
+
+费率不写在策略里，而在 `config/fees/`：
+
+- Binance 现货 Regular User，不用 BNB 抵扣：挂单 0.100%，吃单 0.100%。版本 `binance-spot-regular-2026-11-01`，检索日 2026-11-01，来源是币安公开费率页的 Maker/Taker 列。
+- 若探测改走 Bybit：VIP 0 现货加密对加密，0.1000% / 0.1000%，版本 `bybit-spot-vip0-2026-11-01`。
+- 若改走 OKX：Regular 现货 0.0800% / 0.1000%，版本 `okx-spot-regular-2026-11-01`。
+
+公开品种接口不带账户费率。程序把上面的正费率盖到现货品种上。费率缺失或不是正数时不开新单。
+
+`config/instruments/crypto_spot.json` 只保存已核对过的 BTCUSDT 规格，供启动时对照。下单精度以当次官方 instrument 响应为准。`domestic.json` 必须是空的。
+
+## 撮合
+
+NautilusTrader 1.231 的 `SandboxExecutionClient` 把延迟写成 0，并且关闭内部队列，配置里也没有盘口消耗。本仓库不改 Nautilus 源码，只在子类里重建同一个 `SimulatedExchange`：
+
+- 延迟类名是 `LatencyModel`。文档里后来的 `StaticLatencyModel` 在 1.231 里不存在。下单、改单、撤单都是 100 毫秒，`use_message_queue=True`，否则延迟不会生效。
+- `MakerTakerFeeModel`，费率来自品种上盖好的公开费率。
+- 订单簿 `L2_MBP`，`trade_execution` 打开，盘口消耗打开，不用 K 线成交。
+- 市价或可成交的 IOC 限价只吃保护带里的有限档，剩余取消。
+
+执行引擎的对账关闭。沙箱不会向交易所查询订单。
+
+## 怎么确认没有实盘通道
+
+`check` 会探测行情、建好节点，然后停住，不调用 `run`，不发单。通过时会打印：
+
+- 执行客户端只有 `PaperSandboxExecutionClient`
+- 执行工厂类名里带 `Sandbox`
+- 行情配置的 `api_key` 为空，没有代理
+
+下面任何一条都会拒绝启动：
+
+- 执行配置不是沙箱，或者建成的客户端不是上面这个子类
+- 进程环境里有 Binance、Bybit、OKX 的交易密钥变量。报错只给出变量名
+- 行情配置写了密钥、口令或代理
+- HTTP/WebSocket 主机不在程序里的官方域名表内
+
+代码里没有注册 `BinanceLiveExecClientFactory`、`BybitLiveExecClientFactory`、`OKXLiveExecClientFactory`。
+
+## 输出
+
+每次运行在 `runs/<UTC 时间>/`：
+
+- `catalog/`：逐笔、最优买卖价、有限深度的 Parquet
+- `stream/`：引擎自己的 feather 流
+- `ledger.json`：影子成交和余额。同一笔 `trade_id` 再入账会拒绝
+- `gaps.json`：断线窗口。到达时间比交易所时间晚 2 秒以上的行情也不进撮合
+- `config_snapshot.json`：配置哈希、费率版本、延迟、场所
+- `report/`：抬头、成交簿（csv 和 parquet）、数据质量、日收益摘要。日收益至少两个点时另有 `quantstats.html`
+
+短会话通常只有不到两个日收益点，这时没有 HTML，`quantstats_note.txt` 会说明缺口。日收益按 365 个加密交易日，不按 252。
+
+过期行情和断线窗口里的事件仍会落盘。重放和沙箱按同一条规则丢掉这些事件：断线前已经发出的旧单，不能用断线期间补出来的价格成交。
+
+## 第 7.4 节里现在能看的和还要跑满的
+
+一次两分钟通路测试不能代替 24 小时验收。
+
+- 配置哈希、费率版本、延迟参数写在报告抬头里。
+- 启动自检拒绝交易所执行客户端。
+- 同一段行情重放两次，价和量的差异应为 0，并且要和该次会话的影子账本一致。币安 REST 初始快照没有 `F_LAST`，按这个标志粘包会把第一包推迟到下一笔行情的到达时间，第一笔 IOC 落空，最后一笔卖出就对不上。回放按接收时间还原订单簿包。
+- 参与率、费用和到达成本要等这次会话真的有成交才是数。没有成交时报告里就是空的。
+- 连续 24 小时覆盖，以及中断后从 Parquet 和影子账本恢复且不重复记账，要跑满并实际中断一次才算。这次不启动 24 小时运行。
+- 人为断开后再连上，旧单不能用断线期间补出来的价格成交。过期行情不进撮合的测试还在；断线补价不能成交旧单另有回归测试。
+
+离线测试：
+
+```bash
+PYTHONPATH=src python3 -m unittest tests.test_phase1
+```

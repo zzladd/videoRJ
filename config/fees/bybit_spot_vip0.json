@@ -1,0 +1,13 @@
+{
+  "fee_version": "bybit-spot-vip0-2026-11-01",
+  "venue": "BYBIT",
+  "product": "spot",
+  "account_tier": "VIP 0",
+  "maker_rate": "0.001",
+  "taker_rate": "0.001",
+  "maker_rate_display": "0.1000%",
+  "taker_rate_display": "0.1000%",
+  "retrieved_on": "2026-11-01",
+  "source": "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
+  "source_note": "Bybit 全球帮助中心 Spot Trading（crypto-crypto）VIP 0 的挂单方/吃单方费率。不是欧盟站点费率，也不是 Adventure Zone 或 xStocks。本进程没有账户。"
+}
