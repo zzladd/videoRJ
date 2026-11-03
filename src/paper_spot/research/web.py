@@ -49,8 +49,7 @@ def serve_get(root: Path, path: str, query: dict[str, list[str]]) -> tuple[int, 
                 _name(_one(query, "venue", "BINANCE"), "场所"),
                 _name(_one(query, "symbol", "BTCUSDT"), "标的"),
                 _interval(_one(query, "interval", "1d")),
-                _integer(_one(query, "fast", "10"), "快线"),
-                _integer(_one(query, "slow", "30"), "慢线"),
+                _chart_periods(query),
                 start,
                 end,
             )
@@ -155,6 +154,33 @@ def _interval(value: str) -> str:
     if text not in INTERVAL_LABELS:
         raise ValueError(f"不支持的周期：{text}")
     return text
+
+
+def _chart_periods(query: dict[str, list[str]]) -> list[int]:
+    raw = _optional(query, "ma")
+    if raw:
+        return _parse_periods(raw)
+    fast = _integer(_one(query, "fast", "10"), "均线")
+    slow = _integer(_one(query, "slow", "30"), "均线")
+    if fast == slow:
+        return [fast]
+    return [fast, slow]
+
+
+def _parse_periods(raw: str) -> list[int]:
+    periods: list[int] = []
+    for chunk in raw.replace("，", ",").split(","):
+        text = chunk.strip()
+        if not text:
+            continue
+        number = _integer(text, "均线")
+        if number not in periods:
+            periods.append(number)
+    if not periods:
+        raise ValueError("主图均线至少填一个周期，例如 8,23")
+    if len(periods) > 4:
+        raise ValueError("主图最多 4 条均线")
+    return periods
 
 
 def _integer(value: object, label: str) -> int:

@@ -215,14 +215,17 @@ def chart_payload(
     venue: str,
     symbol: str,
     interval: str,
-    fast: int,
-    slow: int,
+    periods: list[int],
     start_text: str | None = None,
     end_text: str | None = None,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
-    if fast < 1 or slow <= fast:
-        raise ValueError("慢线必须长于快线")
+    if not periods or any(period < 1 or period > 600 for period in periods):
+        raise ValueError("均线周期要在 1 到 600 之间")
+    if len(periods) > 4:
+        raise ValueError("主图最多 4 条均线")
+    fast = min(periods)
+    slow = max(periods)
     now_ms = _now_ms() if now_ms is None else now_ms
     bars = load_bars(root, venue, symbol, interval)
     if start_text:
@@ -241,6 +244,7 @@ def chart_payload(
         "label": INTERVAL_LABELS[interval],
         "fast": fast,
         "slow": slow,
+        "mas": [{"period": period, "points": []} for period in periods],
         "coverage": coverage,
         "count": len(bars),
         "truncated": truncated,
@@ -278,8 +282,11 @@ def chart_payload(
         for bar in bars
     ]
     payload["volume_ma"] = series_points(bars, sma(volumes, 20))
+    payload["mas"] = [
+        {"period": period, "points": series_points(bars, sma(closes, period))} for period in periods
+    ]
     payload["sma_fast"] = series_points(bars, sma(closes, fast))
-    payload["sma_slow"] = series_points(bars, sma(closes, slow))
+    payload["sma_slow"] = series_points(bars, sma(closes, slow)) if slow != fast else []
     macd_lines = macd(closes)
     payload["macd"] = {
         "dif": series_points(bars, macd_lines["dif"]),
@@ -293,7 +300,7 @@ def chart_payload(
     payload["obv"] = series_points(bars, obv(bars))
     try:
         fee = load_fee(root, venue)
-        simulated = simulate_dual_ma(bars, fast, slow, Decimal(fee["taker_rate"]))
+        simulated = None if fast == slow else simulate_dual_ma(bars, fast, slow, Decimal(fee["taker_rate"]))
     except (ConfigError, KeyError, ValueError, OSError):
         simulated = None
         fee = None

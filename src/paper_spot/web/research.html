@@ -50,6 +50,7 @@ main { padding: 14px 16px 40px; }
 }
 .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
 label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+label input.mas { width: 8.5rem; }
 input, select, button {
   background: #0e1318;
   color: var(--ink);
@@ -154,11 +155,8 @@ h2 { font-size: 16px; margin: 0 0 8px; }
           <button type="button" data-interval="1d" class="on">日线</button>
         </div>
       </div>
-      <label>快线
-        <input id="fast" type="number" min="1" max="600" value="10">
-      </label>
-      <label>慢线
-        <input id="slow" type="number" min="2" max="600" value="30">
+      <label>主图均线
+        <input id="mas" class="mas" value="10,30" spellcheck="false" placeholder="8,23" title="逗号分隔，例如 8,23。最多 4 条。交叉用最短和最长的两条。">
       </label>
     </div>
     <div class="row" style="margin-top:10px;">
@@ -218,7 +216,7 @@ h2 { font-size: 16px; margin: 0 0 8px; }
   </section>
   <section class="rank">
     <h2>双均线扫描</h2>
-    <p class="muted">快线 5、10、20，慢线 10、20、30、60，且快线短于慢线。按收益率从高到低。点一行就把这对参数画到主图。</p>
+    <p class="muted">快线 5、10、20，慢线 10、20、30、60，且快线短于慢线。按收益率从高到低。点一行就把这对周期写进主图均线。</p>
     <table>
       <thead>
         <tr><th>快/慢</th><th>收益率</th><th>最大回撤</th><th>费用</th><th>成交笔数</th><th>期末权益</th></tr>

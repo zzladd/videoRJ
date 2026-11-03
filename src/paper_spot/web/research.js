@@ -2,6 +2,7 @@ const RED = "#ff4d4f";
 const GREEN = "#00b578";
 const GOLD = "#f0b90b";
 const BLUE = "#5aa2ff";
+const MA_COLORS = [GOLD, BLUE, "#c084fc", "#2dd4bf"];
 const state = {
   interval: localStorage.getItem("paper-spot-interval") || "1d",
   ind1: localStorage.getItem("paper-spot-ind1") || "volume",
@@ -20,8 +21,7 @@ function boot() {
   restoreField("venue", "paper-spot-venue");
   restoreField("symbol", "paper-spot-symbol");
   restoreField("sync-start", "paper-spot-sync-start");
-  restoreField("fast", "paper-spot-fast");
-  restoreField("slow", "paper-spot-slow");
+  restoreMovingAverages();
   $("ind1").value = state.ind1;
   $("ind2").value = state.ind2;
   document.querySelectorAll("#periods button").forEach((button) => {
@@ -39,13 +39,16 @@ function boot() {
   $("sync").addEventListener("click", syncBars);
   $("scan").addEventListener("click", scanGrid);
   $("validate").addEventListener("click", validateWindow);
-  $("fast").addEventListener("change", () => {
+  $("mas").addEventListener("change", () => {
     rememberLibrary();
     loadChart();
   });
-  $("slow").addEventListener("change", () => {
-    rememberLibrary();
-    loadChart();
+  $("mas").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      rememberLibrary();
+      loadChart();
+    }
   });
   $("venue").addEventListener("change", () => {
     rememberLibrary();
@@ -60,8 +63,8 @@ function boot() {
   $("rank-body").addEventListener("click", (event) => {
     const row = event.target.closest("tr");
     if (!row || !row.dataset.fast) return;
-    $("fast").value = row.dataset.fast;
-    $("slow").value = row.dataset.slow;
+    $("mas").value = `${row.dataset.fast},${row.dataset.slow}`;
+    rememberLibrary();
     state.viewStart = $("search-start").value;
     state.viewEnd = $("search-end").value;
     document.querySelectorAll("#rank-body tr").forEach((item) => item.classList.remove("picked"));
@@ -77,12 +80,44 @@ function restoreField(id, key) {
   if (value) $(id).value = value;
 }
 
+function restoreMovingAverages() {
+  const saved = localStorage.getItem("paper-spot-mas");
+  if (saved) {
+    $("mas").value = saved;
+    return;
+  }
+  const fast = localStorage.getItem("paper-spot-fast");
+  const slow = localStorage.getItem("paper-spot-slow");
+  if (fast && slow) $("mas").value = `${fast},${slow}`;
+}
+
 function rememberLibrary() {
   localStorage.setItem("paper-spot-venue", $("venue").value);
   localStorage.setItem("paper-spot-symbol", $("symbol").value.trim().toUpperCase());
   localStorage.setItem("paper-spot-sync-start", $("sync-start").value);
-  localStorage.setItem("paper-spot-fast", $("fast").value);
-  localStorage.setItem("paper-spot-slow", $("slow").value);
+  localStorage.setItem("paper-spot-mas", $("mas").value.trim());
+}
+
+function maPeriods() {
+  const raw = $("mas").value.trim();
+  if (!raw) return [];
+  const periods = [];
+  for (const chunk of raw.split(/[,，\s]+/)) {
+    if (!chunk) continue;
+    if (!/^\d+$/.test(chunk)) return null;
+    const number = Number(chunk);
+    if (number < 1 || number > 600) return null;
+    if (!periods.includes(number)) periods.push(number);
+  }
+  if (periods.length > 4) return null;
+  return periods;
+}
+
+function strategyPair() {
+  const periods = maPeriods();
+  if (!periods || periods.length < 2) return null;
+  const ordered = [...periods].sort((left, right) => left - right);
+  return { fast: ordered[0], slow: ordered[ordered.length - 1] };
 }
 
 function markInterval(interval) {
@@ -118,12 +153,13 @@ function rememberIndicator(id) {
 }
 
 function queryBase() {
+  const periods = maPeriods();
+  if (!periods || !periods.length) return null;
   const params = new URLSearchParams({
     venue: $("venue").value,
     symbol: $("symbol").value.trim().toUpperCase(),
     interval: state.interval,
-    fast: $("fast").value,
-    slow: $("slow").value,
+    ma: periods.join(","),
   });
   if (state.viewStart) params.set("start", state.viewStart);
   if (state.viewEnd) params.set("end", state.viewEnd);
@@ -138,9 +174,14 @@ async function request(url, options) {
 }
 
 async function loadChart() {
+  const params = queryBase();
+  if (!params) {
+    setStatus("主图均线写成逗号分隔的周期，例如 8,23。每条在 1 到 600 之间，最多 4 条。", true);
+    return;
+  }
   setStatus("正在读取本地 K 线…");
   try {
-    const payload = await request("/api/research/chart?" + queryBase().toString());
+    const payload = await request("/api/research/chart?" + params.toString());
     state.payload = payload;
     drawAll();
     const coverage = payload.coverage || {};
@@ -241,8 +282,8 @@ async function scanGrid() {
     renderRank(result.rows || []);
     setStatus(`扫描完成，窗口 ${result.count} 根，吃单费率 ${result.taker_rate}。`);
     if (result.rows && result.rows.length) {
-      $("fast").value = result.rows[0].fast;
-      $("slow").value = result.rows[0].slow;
+      $("mas").value = `${result.rows[0].fast},${result.rows[0].slow}`;
+      rememberLibrary();
       state.viewStart = $("search-start").value;
       state.viewEnd = $("search-end").value;
       await loadChart();
@@ -253,6 +294,11 @@ async function scanGrid() {
 }
 
 async function validateWindow() {
+  const pair = strategyPair();
+  if (!pair) {
+    setStatus("交叉需要至少两条不同周期的均线，例如 8,23。", true);
+    return;
+  }
   setStatus("正在做样本外验证…");
   try {
     const result = await request("/api/research/validate", {
@@ -262,8 +308,8 @@ async function validateWindow() {
         venue: $("venue").value,
         symbol: $("symbol").value.trim().toUpperCase(),
         interval: state.interval,
-        fast: Number($("fast").value),
-        slow: Number($("slow").value),
+        fast: pair.fast,
+        slow: pair.slow,
         search_start: $("search-start").value,
         search_end: $("search-end").value,
         valid_start: $("valid-start").value,
@@ -302,7 +348,10 @@ function renderRank(rows) {
 
 function renderSummary(summary) {
   if (!summary) {
-    $("summary").textContent = "这个窗口还不能计算双均线。补齐 K 线并保证慢线长于快线。";
+    const periods = maPeriods();
+    $("summary").textContent = periods && periods.length >= 2
+      ? "这个窗口还不能计算双均线。先补齐本地 K 线。"
+      : "主图可以只画一条均线。交叉和验证需要两条，例如 8,23。";
     return;
   }
   $("summary").textContent =
@@ -329,10 +378,16 @@ function drawAll() {
   });
   candles.setData(payload.candles);
   candles.setMarkers(buildMarkers(payload));
-  const fast = main.addLineSeries({ color: GOLD, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-  const slow = main.addLineSeries({ color: BLUE, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-  fast.setData(payload.sma_fast);
-  slow.setData(payload.sma_slow);
+  (payload.mas || []).forEach((line, index) => {
+    const series = main.addLineSeries({
+      color: MA_COLORS[index % MA_COLORS.length],
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      title: `MA${line.period}`,
+    });
+    series.setData(line.points);
+  });
   state.charts.push(main);
   linkChart(main, candles);
   main.timeScale().fitContent();
@@ -528,11 +583,19 @@ function showLegend(param) {
   const base = previous ? previous.close : candle.open;
   const percent = base ? (change / base) * 100 : 0;
   const tone = change >= 0 ? "up" : "down";
+  const averages = (payload.mas || [])
+    .map((line, index) => {
+      const point = line.points.find((item) => item.time === candle.time);
+      if (!point) return "";
+      return `<span style="color:${MA_COLORS[index % MA_COLORS.length]}">MA${line.period} ${priceText(point.value)}</span>`;
+    })
+    .filter(Boolean)
+    .join(" ");
   $("legend").innerHTML =
     `<b>${payload.symbol}</b> 开 ${priceText(candle.open)} 高 ${priceText(candle.high)} ` +
     `低 ${priceText(candle.low)} 收 ${priceText(candle.close)} ` +
     `<span class="${tone}">${change >= 0 ? "+" : ""}${priceText(change)} ${percent >= 0 ? "+" : ""}${percent.toFixed(2)}%</span> ` +
-    `量 ${volume ? compact(volume.value) : "—"}`;
+    `量 ${volume ? compact(volume.value) : "—"} ${averages}`;
 }
 
 function setStatus(text, failed) {

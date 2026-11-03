@@ -246,8 +246,7 @@ class ResearchTests(unittest.TestCase):
                 "BINANCE",
                 "BTCUSDT",
                 "1d",
-                10,
-                30,
+                [10, 30],
                 "2024-07-01",
                 "2024-12-31",
                 NOW,
@@ -255,6 +254,14 @@ class ResearchTests(unittest.TestCase):
             self.assertGreater(chart["count"], 100)
             self.assertEqual(chart["candles"][0]["open"], 100.0)
             self.assertIn("hist", chart["macd"])
+            self.assertEqual([item["period"] for item in chart["mas"]], [10, 30])
+            custom = chart_payload(root, "BINANCE", "BTCUSDT", "1d", [23, 8], "2024-07-01", "2024-12-31", NOW)
+            self.assertEqual([item["period"] for item in custom["mas"]], [23, 8])
+            self.assertEqual(custom["fast"], 8)
+            self.assertEqual(custom["slow"], 23)
+            single = chart_payload(root, "BINANCE", "BTCUSDT", "1d", [8], "2024-07-01", "2024-12-31", NOW)
+            self.assertEqual(len(single["mas"]), 1)
+            self.assertIsNone(single["summary"])
             gappy = [_bar(10, 10), _bar(12, 11)]
             upsert_bars(root, "BINANCE", "BTCUSDT", "1h", gappy)
             with self.assertRaisesRegex(ValueError, "缺口"):
@@ -381,6 +388,9 @@ class ResearchTests(unittest.TestCase):
                 )
                 self.assertEqual(caught_up["fetched"], 0)
                 self.assertFalse(caught_up["appended"])
+                page = urlopen(f"http://127.0.0.1:{port}/research", timeout=5).read().decode("utf-8")
+                self.assertIn("主图均线", page)
+                self.assertIn("8,23", page)
             finally:
                 server.shutdown()
                 server.server_close()
