@@ -119,6 +119,7 @@ PYTHONPATH=src python3 -m paper_spot serve
 - 策略：编辑 `user_strategy.py` 并保存（保存前会检查 `decide`）
 - 发起通路测试：选策略和秒数（站点一次最多 300 秒）
 - 自检、重写报告、回放
+- 研究：本地 K 线、双均线扫描、样本外的 K 线级验证，以及蜡烛图和两个可切换指标窗
 
 也可以直接落到某次运行：
 
@@ -126,7 +127,22 @@ PYTHONPATH=src python3 -m paper_spot serve
 PYTHONPATH=src python3 -m paper_spot view runs/<目录>
 ```
 
-站点只读本机 `runs/` 与配置，不拉外部行情，不注册交易所执行客户端。
+通路测试页面只读本机 `runs/` 与配置，不注册交易所执行客户端。研究页会把官方公开 K 线补进本地 `data/bars/`，不使用交易密钥。
+
+## 研究
+
+本地已收盘 K 线是研究的数据本体。交易所只用来补历史和追加已收盘的柱。未收盘的柱不进扫描，也不进收益。
+
+```bash
+PYTHONPATH=src python3 -m paper_spot bars sync --symbol BTCUSDT --interval 1d --start 2024-01-01 --venue BINANCE
+PYTHONPATH=src python3 -m paper_spot serve
+```
+
+打开 `http://127.0.0.1:8765/research`。周期有 1 分钟、5 分钟、15 分钟、30 分钟、60 分钟和日线。主图是红涨绿跌的蜡烛图，上面画双均线和信号。下面两个指标窗可以各自切换成交量、MACD、RSI、KDJ、ATR、OBV，并和主图共用十字线和缩放。MACD 柱按同花顺写成 `2×(DIF−DEA)`。
+
+双均线在收盘确认金叉或死叉，下一根开盘价全仓买入或卖出，费用用该场所费率文件里的吃单费率。扫描窗口和验证窗口必须错开，验证要晚于扫描。结果写在 `data/experiments/<时间>/result.json`，并把用到的 K 线范围钉死。这是 K 线级验证，不是 L2 沙箱成交。实时通路仍从「发起」进入。
+
+`data/` 不进版本库。窗口里有缺口时，扫描和验证会停下来，等本地库补齐。
 
 ## 费率
 
