@@ -25,6 +25,8 @@ from paper_spot.config_loader import load_paper
 from paper_spot.config_loader import repo_root
 from paper_spot.strategies.loader import load_decide
 from paper_spot.strategies.loader import normalize_strategy
+from paper_spot.research.web import serve_get as serve_research_get
+from paper_spot.research.web import serve_post as serve_research_post
 from paper_spot.view import build_model
 from paper_spot.view import render_run_body
 
@@ -198,6 +200,10 @@ def serve_site(
 def _make_handler(site: Site):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
+            path = unquote(urlparse(self.path).path)
+            if path == "/research" or path.startswith("/research/") or path.startswith("/api/research"):
+                self._serve_research("GET")
+                return
             try:
                 self._dispatch_get()
             except ConfigError as exc:
@@ -206,12 +212,44 @@ def _make_handler(site: Site):
                 self._html(500, _page(site, "出错", f"<p class='error'>{html.escape(type(exc).__name__ + ': ' + str(exc))}</p>", "home"))
 
         def do_POST(self) -> None:  # noqa: N802
+            path = unquote(urlparse(self.path).path)
+            if path.startswith("/api/research"):
+                self._serve_research("POST")
+                return
             try:
                 self._dispatch_post()
             except ConfigError as exc:
                 self._html(400, _page(site, "出错", f"<p class='error'>{html.escape(str(exc))}</p>", "home"))
             except Exception as exc:  # noqa: BLE001
                 self._html(500, _page(site, "出错", f"<p class='error'>{html.escape(type(exc).__name__ + ': ' + str(exc))}</p>", "home"))
+
+        def _serve_research(self, method: str) -> None:
+            parsed = urlparse(self.path)
+            path = unquote(parsed.path)
+            try:
+                if method == "GET":
+                    result = serve_research_get(site.root, path, parse_qs(parsed.query))
+                else:
+                    length = int(self.headers.get("Content-Length") or "0")
+                    raw = self.rfile.read(length) if length else b""
+                    result = serve_research_post(site.root, path, raw)
+                if result is None:
+                    self.send_error(404)
+                    return
+                status, content_type, body = result
+                self._bytes(status, content_type, body)
+            except (ConfigError, ValueError) as exc:
+                self._bytes(400, "application/json; charset=utf-8", _error_body(str(exc)))
+            except Exception as exc:  # noqa: BLE001
+                self._bytes(500, "application/json; charset=utf-8", _error_body(f"{type(exc).__name__}: {exc}"))
+
+        def _bytes(self, status: int, content_type: str, body: bytes) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
 
         def log_message(self, fmt: str, *args: Any) -> None:
             return
@@ -415,6 +453,7 @@ def _home(site: Site) -> str:
   <p class="lead">加密现货影子盘的本机控制台。行情只读，订单只进沙箱。下面是基础功能：看运行、改策略、发起通路测试、重写报告和回放。</p>
   <div class="actions">
     <a class="btn primary" href="/start">发起通路测试</a>
+    <a class="btn" href="/research">研究</a>
     <a class="btn" href="/runs">运行列表</a>
     <a class="btn" href="/strategy">策略</a>
     <a class="btn" href="/check">自检</a>
@@ -576,6 +615,7 @@ def _page(site: Site, title: str, body: str, active: str, head_extra: str = "") 
     {_nav("总览", "/", active == "home")}
     {_nav("运行", "/runs", active == "runs")}
     {_nav("策略", "/strategy", active == "strategy")}
+    {_nav("研究", "/research", active == "research")}
     {_nav("发起", "/start", active == "start")}
     {_nav("自检", "/check", active == "check")}
   </nav>
@@ -595,6 +635,10 @@ def _page(site: Site, title: str, body: str, active: str, head_extra: str = "") 
 def _nav(label: str, href: str, on: bool) -> str:
     cls = "on" if on else ""
     return f'<a class="{cls}" href="{html.escape(href)}">{html.escape(label)}</a>'
+
+
+def _error_body(message: str) -> bytes:
+    return json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
 
 
 def _read_json(path: Path) -> dict[str, Any]:

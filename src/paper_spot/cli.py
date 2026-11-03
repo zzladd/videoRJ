@@ -1,9 +1,11 @@
-"""命令行：自检、跑一次影子盘、重写报告、重放、本机站点。"""
+"""命令行：自检、跑一次影子盘、重写报告、重放、本机站点、补本地 K 线。"""
 
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from paper_spot.config_loader import ConfigError
@@ -45,6 +47,15 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("run_dir", type=Path)
     view.add_argument("--port", type=int, default=8765)
 
+    bars = sub.add_parser("bars", help="维护本地已收盘 K 线")
+    bars_sub = bars.add_subparsers(dest="bars_command", required=True)
+    sync = bars_sub.add_parser("sync", help="从官方公开行情补已收盘 K 线")
+    sync.add_argument("--venue", default="BINANCE")
+    sync.add_argument("--symbol", default="BTCUSDT")
+    sync.add_argument("--interval", default="1d")
+    sync.add_argument("--start", required=True, help="UTC 日期，YYYY-MM-DD")
+    sync.add_argument("--end", default=None, help="UTC 日期，含当天。省略则到今天")
+
     args = parser.parse_args(argv)
     try:
         root = repo_root()
@@ -72,10 +83,27 @@ def main(argv: list[str] | None = None) -> int:
             serve_site(port=args.port, root=root)
         elif args.command == "view":
             serve_run(args.run_dir, args.port)
+        elif args.command == "bars":
+            _sync_bars(root, args)
     except (ConfigError, ShadowGuardError, ValueError) as exc:
         print(f"拒绝启动：{exc}")
         return 2
     return 0
+
+
+def _sync_bars(root: Path, args: argparse.Namespace) -> None:
+    from paper_spot.research.service import end_of_utc_date
+    from paper_spot.research.service import parse_utc_date
+    from paper_spot.research.service import sync_range
+
+    start_ms = parse_utc_date(args.start)
+    if args.end:
+        end_ms = end_of_utc_date(args.end)
+    else:
+        moment = datetime.now(timezone.utc)
+        end_ms = int(datetime(moment.year, moment.month, moment.day, tzinfo=timezone.utc).timestamp() * 1000) + 86_400_000 - 1
+    result = sync_range(root, args.venue.upper(), args.symbol.upper(), args.interval, start_ms, end_ms)
+    print(json.dumps(result["coverage"], ensure_ascii=False, indent=2))
 
 
 def _new_run_dir(root: Path) -> Path:

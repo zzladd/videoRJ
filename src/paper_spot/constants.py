@@ -11,6 +11,7 @@ OFFICIAL_HOSTS = frozenset(
     {
         "api.binance.com",
         "data-api.binance.vision",
+        "data.binance.vision",
         "stream.binance.com",
         "data-stream.binance.vision",
         "api.bybit.com",
