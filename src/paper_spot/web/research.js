@@ -3,6 +3,7 @@ const GREEN = "#00b578";
 const GOLD = "#f0b90b";
 const BLUE = "#5aa2ff";
 const MA_COLORS = [GOLD, BLUE, "#c084fc", "#2dd4bf"];
+const INTERVAL_SECONDS = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "1d": 86400 };
 const state = {
   interval: localStorage.getItem("paper-spot-interval") || "1d",
   ind1: localStorage.getItem("paper-spot-ind1") || "volume",
@@ -14,6 +15,7 @@ const state = {
   viewEnd: "",
   catchupFor: "",
 };
+let chartRequest = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -30,8 +32,7 @@ function boot() {
       markInterval(button.dataset.interval);
       state.viewStart = "";
       state.viewEnd = "";
-      state.catchupFor = "";
-      loadChart();
+      loadChart({ catchup: false });
     });
   });
   $("ind1").addEventListener("change", () => rememberIndicator("ind1"));
@@ -173,15 +174,17 @@ async function request(url, options) {
   return data;
 }
 
-async function loadChart() {
+async function loadChart(options = {}) {
   const params = queryBase();
   if (!params) {
     setStatus("主图均线写成逗号分隔的周期，例如 8,23。每条在 1 到 600 之间，最多 4 条。", true);
     return;
   }
+  const requestId = ++chartRequest;
   setStatus("正在读取本地 K 线…");
   try {
     const payload = await request("/api/research/chart?" + params.toString());
+    if (requestId !== chartRequest) return;
     state.payload = payload;
     drawAll();
     const coverage = payload.coverage || {};
@@ -194,11 +197,12 @@ async function loadChart() {
     $("sync").textContent = coverage.count ? "追加最新" : "补齐本地 K 线";
     renderSummary(payload.summary);
     const key = `${payload.venue}:${payload.symbol}:${payload.interval}`;
-    if (coverage.count && state.catchupFor !== key) {
+    if (options.catchup !== false && coverage.count && state.catchupFor !== key) {
       state.catchupFor = key;
       catchUp(false);
     }
   } catch (error) {
+    if (requestId !== chartRequest) return;
     setStatus(error.message, true);
   }
 }
@@ -226,7 +230,7 @@ async function syncBars() {
     });
     state.catchupFor = `${body.venue}:${body.symbol}:${body.interval}`;
     setStatus(`已写入 ${result.fetched} 根。本地共 ${result.coverage.count} 根。下次打开直接使用。`);
-    await loadChart();
+    await loadChart({ catchup: false });
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -245,16 +249,18 @@ function libraryCoversStart() {
 async function catchUp(manual) {
   const venue = $("venue").value;
   const symbol = $("symbol").value.trim().toUpperCase();
+  const interval = state.interval;
   try {
     const result = await request("/api/research/catchup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ venue, symbol, interval: state.interval }),
+      body: JSON.stringify({ venue, symbol, interval }),
     });
-    state.catchupFor = `${venue}:${symbol}:${state.interval}`;
+    if (state.interval !== interval) return;
+    state.catchupFor = `${venue}:${symbol}:${interval}`;
     if (result.fetched) {
       setStatus(`追加了 ${result.fetched} 根。本地共 ${result.coverage.count} 根。`);
-      await loadChart();
+      await loadChart({ catchup: false });
       return;
     }
     if (manual) {
@@ -286,7 +292,7 @@ async function scanGrid() {
       rememberLibrary();
       state.viewStart = $("search-start").value;
       state.viewEnd = $("search-end").value;
-      await loadChart();
+      await loadChart({ catchup: false });
     }
   } catch (error) {
     setStatus(error.message, true);
@@ -325,7 +331,7 @@ async function validateWindow() {
     state.viewStart = $("valid-start").value;
     state.viewEnd = $("valid-end").value;
     setStatus(`已保存实验 ${result.id}。图上是验证窗口。`);
-    await loadChart();
+    await loadChart({ catchup: false });
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -400,16 +406,19 @@ function drawPanes() {
   state.lock = true;
   state.charts.slice(1).forEach((chart) => chart.remove());
   state.charts = state.charts.slice(0, 1);
-  state.lock = false;
-  if (!state.payload || !state.payload.candles.length || !state.charts[0]) return;
+  if (!state.payload || !state.payload.candles.length || !state.charts[0]) {
+    state.lock = false;
+    return;
+  }
   addIndicator($("pane-1"), state.ind1, false);
   addIndicator($("pane-2"), state.ind2, true);
   const range = state.charts[0].timeScale().getVisibleRange();
   if (range) {
-    state.lock = true;
     state.charts.slice(1).forEach((chart) => chart.timeScale().setVisibleRange(range));
-    state.lock = false;
   }
+  requestAnimationFrame(() => {
+    state.lock = false;
+  });
   requestAnimationFrame(resizeCharts);
 }
 
@@ -494,13 +503,20 @@ function linkChart(chart, series) {
   chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
     if (state.lock || !range) return;
     state.lock = true;
+    const step = INTERVAL_SECONDS[state.interval] || 60;
     state.charts.forEach((other) => {
       if (other === chart) return;
       const current = other.timeScale().getVisibleRange();
-      if (current && Math.abs(current.from - range.from) < 1 && Math.abs(current.to - range.to) < 1) return;
+      if (
+        current &&
+        Math.abs(current.from - range.from) < step &&
+        Math.abs(current.to - range.to) < step
+      ) return;
       other.timeScale().setVisibleRange(range);
     });
-    state.lock = false;
+    requestAnimationFrame(() => {
+      state.lock = false;
+    });
   });
   chart.subscribeCrosshairMove((param) => {
     if (state.lock) return;
